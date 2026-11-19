@@ -489,6 +489,7 @@ var
   M: TManifestVersion;
   V: TDelphiVersion;
   P: Integer;
+  Number: string;
 begin
   List := TDelphiVersionList.Create(True);
   try
@@ -497,13 +498,14 @@ begin
       V := TDelphiVersion.Create;
       List.Add(V);
       V.BdsVersion := M.BdsVersion;
-      P := Pos('.', M.BdsVersion);
+      Number := VersionIdNumber(M.BdsVersion);
+      P := Pos('.', Number);
       if P = 0 then
-        P := Length(M.BdsVersion) + 1;
-      V.Major := StrToIntDef(Copy(M.BdsVersion, 1, P - 1), 0);
-      V.Minor := StrToIntDef(Copy(M.BdsVersion, P + 1, MaxInt), 0);
+        P := Length(Number) + 1;
+      V.Major := StrToIntDef(Copy(Number, 1, P - 1), 0);
+      V.Minor := StrToIntDef(Copy(Number, P + 1, MaxInt), 0);
       V.Era := deEmbarcadero;
-      if IsLegacyVersion(M) then
+      if IsLegacyDelphiId(M.BdsVersion) or IsLegacyVersion(M) then
         V.Era := deBorlandDelphi;
     end;
     Result := SortVersionsOldestFirst(AVersions, List);

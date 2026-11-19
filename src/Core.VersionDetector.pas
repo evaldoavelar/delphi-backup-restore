@@ -68,7 +68,7 @@ procedure TVersionDetector.AddVersion(AList: TDelphiVersionList;
   AAccess: LongInt; AWowNode: Boolean);
 var
   Reg: TRegistry;
-  Key, Root, BinExe, Common, Base, AppBase: string;
+  Key, Root, BinExe, Common, Base, AppBase, VersionId: string;
   V: TDelphiVersion;
 begin
   Reg := TRegistry.Create(AAccess);
@@ -95,10 +95,15 @@ begin
         if not FileExists(BinExe) then
           Exit;
       end;
-      if AList.FindByBds(ABdsVersion) <> nil then
+      { Delphi 5..7 get a 'D' prefixed id: Delphi 5 and Delphi 2007 both use '5.0' }
+      if AEra = deBorlandDelphi then
+        VersionId := LegacyDelphiId(ABdsVersion)
+      else
+        VersionId := ABdsVersion;
+      if AList.FindByBds(VersionId) <> nil then
         Exit;
       V := TDelphiVersion.Create;
-      V.BdsVersion := ABdsVersion;
+      V.BdsVersion := VersionId;
       V.Major := StrToIntDef(Copy(ABdsVersion, 1, Pos('.', ABdsVersion)
         - 1), 0);
       V.Minor := StrToIntDef(Copy(ABdsVersion, Pos('.', ABdsVersion) + 1,

@@ -84,6 +84,12 @@ function StudioFolderName(AEra: TDelphiEra): string;    // pasta em Documents/Pu
                                                         // 'RAD Studio' (CodeGear/BDS5), 'Borland Studio Projects'
 ```
 
+### Identificador de versão
+`TDelphiVersion.BdsVersion` é o **identificador** da versão na máquina e no manifest. É o nome da chave
+de registro (`'22.0'`, `'5.0'`), exceto na era `Borland\Delphi` (Delphi 5..7), que recebe o prefixo `D`
+(`'D7.0'`): Delphi 5 e Delphi 2007 (BDS 5.0) usam ambos a chave `5.0`. Helpers em `Core.Types`:
+`LegacyDelphiId`, `IsLegacyDelphiId`, `VersionIdNumber`. A CLI aceita o identificador (`--versions D7.0,22.0`).
+
 ### Core.VersionDetector (luna)
 ```pascal
 function CreateVersionDetector(const ALogger: ILogger): IVersionDetector;

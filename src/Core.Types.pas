@@ -72,7 +72,11 @@ type
 
   TDelphiVersion = class
   public
-    BdsVersion: string; // registry version key, e.g. '22.0', '5.0', '7.0' (D7)
+    { Version identifier, unique per machine. Equals the registry version key ('22.0',
+      '5.0') except for the Borland\Delphi era (Delphi 5..7), which is prefixed with 'D'
+      ('D7.0') because Delphi 5 and Delphi 2007 (BDS 5.0) share the key name '5.0'.
+      Use VersionIdNumber to get the registry key name back. }
+    BdsVersion: string;
     Major: Integer; // parsed from BdsVersion, used for ordering
     Minor: Integer;
     Era: TDelphiEra;
@@ -311,6 +315,10 @@ function ItemCategoryToText(ACategory: TItemCategory): string;
 function TextToItemCategory(const AText: string): TItemCategory;
 function AllCategories: TItemCategories;
 function DefaultBackupCategories: TItemCategories; // all except icSystemDll
+{ Version identifiers: 'D7.0' = Borland Delphi 7, '5.0' = BDS 5.0 (Delphi 2007), see BdsVersion }
+function LegacyDelphiId(const ARegistryVersion: string): string; // '7.0' -> 'D7.0'
+function IsLegacyDelphiId(const AId: string): Boolean; // starts with 'D'
+function VersionIdNumber(const AId: string): string; // 'D7.0' -> '7.0'
 
 implementation
 
@@ -631,6 +639,24 @@ end;
 function DefaultBackupCategories: TItemCategories;
 begin
   Result := AllCategories - [icSystemDll];
+end;
+
+function LegacyDelphiId(const ARegistryVersion: string): string;
+begin
+  Result := 'D' + ARegistryVersion;
+end;
+
+function IsLegacyDelphiId(const AId: string): Boolean;
+begin
+  Result := (Length(AId) > 1) and CharInSet(AId[1], ['D', 'd']);
+end;
+
+function VersionIdNumber(const AId: string): string;
+begin
+  if IsLegacyDelphiId(AId) then
+    Result := Copy(AId, 2, MaxInt)
+  else
+    Result := AId;
 end;
 
 end.
