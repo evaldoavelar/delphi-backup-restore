@@ -356,6 +356,9 @@ Para configurar uma máquina Windows com Delphi como runner de CI:
    `self-hosted`, `windows`, `delphi`
 4. Certifique-se de que o Delphi XE8+ esteja instalado e com `rsvars.bat` funcional no registro.
 
+> [!CAUTION]
+> Num repositório público, um runner self-hosted executa o código do Pull Request **na sua máquina**. Por isso o job `build-test` só roda para PRs abertos a partir de branches **do próprio repositório**; PRs vindos de forks passam apenas pelo `lint` (em runner do GitHub). Mantenha também em **Settings > Actions > General** a opção **Require approval for all outside collaborators** e use um usuário do Windows sem privilégios de administrador para o serviço do runner.
+
 ### Proteção de Branch
 Recomenda-se configurar a proteção da branch `main` no GitHub (**Settings > Branches > Add branch protection rule**):
 - Marcar **Require status checks to pass before merging**.

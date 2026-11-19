@@ -61,8 +61,8 @@ jobs:
           # grep exit codes: 0 = found (violation), 1 = not found, >= 2 = grep error.
           # A grep error must fail the job, never pass silently.
           check() {
-            out=$(grep -rnIE "$1" src/ tests/)
-            rc=$?
+            # "a && b || c" keeps bash -e (the GitHub default shell) from exiting on rc 1
+            out=$(grep -rnIE "$1" src/ tests/) && rc=0 || rc=$?
             if [ "$rc" -eq 0 ]; then
               echo "$out"
               echo "::error::$2"
@@ -110,6 +110,8 @@ jobs:
     name: Build & Run Tests
     runs-on: [self-hosted, windows, delphi]
     needs: lint
+    # never run code from forks on the self-hosted machine (public repository)
+    if: github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
