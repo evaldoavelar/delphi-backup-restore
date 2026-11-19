@@ -43,7 +43,7 @@ var
   Done: TBackupItemList;
   M: TManifest;
   OK, Used: Boolean;
-  I, Failures: Integer;
+  I, Failures, ManifestFailures: Integer;
   D, F: TStrings;
 begin
   FFailureCount := 0;
@@ -142,7 +142,8 @@ begin
             Result := TPath.Combine(TPath.Combine(Root, BACKUP_FILES_DIR),
               AItem.Id);
           end;
-        end, AConfig, FLogger);
+        end, AConfig, FLogger, ManifestFailures);
+      Inc(Failures, ManifestFailures);
       try
         SaveManifest(M, TPath.Combine(Root, BACKUP_MANIFEST_FILE));
       finally
