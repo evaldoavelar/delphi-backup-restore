@@ -81,7 +81,7 @@ begin
   Say('     (sem argumentos abre a interface gráfica)');
   Say('');
   Say('Comandos:');
-  Say('  list       Lista as versões do Delphi instaladas');
+  Say('  list       Lista as versões instaladas e seus identificadores (para --versions)');
   Say('  backup     Cria um backup (requer --dest)');
   Say('  restore    Restaura um backup (requer --source)');
   Say('  compare    Compara um backup com o ambiente atual (requer --source)');
@@ -90,6 +90,7 @@ begin
   Say('');
   Say('Opções:');
   Say('  --versions <lista>    Versões BDS separadas por vírgula, ex.: 22.0,5.0 (padrão: todas)');
+  Say('                        (use o identificador exatamente como o comando list mostra, ex.: D7.0)');
   Say('  --dest <pasta>        Pasta onde o backup será criado');
   Say('  --source <pasta|zip>  Pasta ou .zip do backup');
   Say('  --no-zip              Não compactar o backup em .zip');
@@ -326,7 +327,6 @@ var
   Added, I, Failures: Integer;
   OutPath: string;
 begin
-  Failures := 0;
   if AOpts.Dest = '' then
   begin
     Say('Erro: o comando backup exige --dest <pasta>.');
@@ -563,6 +563,8 @@ begin
     on E: EPrecheckError do
     begin
       Say('Pré-requisito não atendido: ' + E.Message);
+      if not IsRunningAsAdmin then
+        Say('Dica: Abra o terminal como administrador.');
       Result := EXIT_PRECHECK;
     end;
     on E: Exception do

@@ -10,7 +10,7 @@
 interface
 
 uses
-  Winapi.Windows, Winapi.Messages, System.SysUtils, System.Classes,
+  Winapi.Windows, Winapi.Messages, Winapi.ShellAPI, System.SysUtils, System.Classes,
   System.Generics.Collections,
   Vcl.Controls, Vcl.Forms, Vcl.StdCtrls, Vcl.ExtCtrls, Vcl.ComCtrls,
   Vcl.CheckLst, Vcl.Dialogs,
@@ -63,6 +63,9 @@ type
     FPanels: array [TWizPage] of TPanel;
 
     FRgMode: TRadioGroup;
+    FLblAdmin: TLabel;
+    FPnlElevate: TPanel;
+    FBtnElevate: TButton;
     FLblVersions: TLabel;
     FLstVersions: TCheckListBox;
     FLblItems: TLabel;
@@ -124,6 +127,7 @@ type
     procedure NextClick(Sender: TObject);
     procedure CloseClick(Sender: TObject);
     procedure ModeClick(Sender: TObject);
+    procedure ElevateClick(Sender: TObject);
     procedure MarkAllVersions(Sender: TObject);
     procedure MarkNoVersions(Sender: TObject);
     procedure MarkAllItems(Sender: TObject);
@@ -373,6 +377,22 @@ begin
   NewLabel(FPanels[wpMode],
     'Dica: instale as versões do Delphi (da mais antiga para a mais nova) antes de restaurar. '
     + 'A restauração sobrescreve componentes, configurações da IDE e chaves de registro.');
+  FLblAdmin := NewLabel(FPanels[wpMode],
+    'Para restaurar é necessário executar como administrador. Este programa não está ' +
+    'elevado: reinicie-o como administrador para continuar.');
+  FLblAdmin.Font.Style := [fsBold];
+  FLblAdmin.Font.Color := clMaroon;
+  FLblAdmin.Visible := False;
+  FPnlElevate := TPanel.Create(Self);
+  FPnlElevate.Parent := FPanels[wpMode];
+  FPnlElevate.Align := alTop;
+  FPnlElevate.Height := 40;
+  FPnlElevate.BevelOuter := bvNone;
+  FPnlElevate.Caption := '';
+  FPnlElevate.Visible := False;
+  FBtnElevate := NewButton(FPnlElevate, 'Reiniciar como administrador', 210,
+    ElevateClick);
+  FBtnElevate.SetBounds(0, 8, 210, 28);
 end;
 
 procedure TMainWizard.BuildVersionsPage;
@@ -556,7 +576,10 @@ begin
   FBtnBack.Visible := FPage <> wpMode;
   FBtnBack.Enabled := not FBusy;
   FBtnNext.Visible := FPage <> wpRun;
-  FBtnNext.Enabled := not FBusy;
+  FBtnNext.Enabled := not FBusy and not ((FPage = wpMode) and
+    (FMode = wmRestore) and not IsRunningAsAdmin);
+  FLblAdmin.Visible := (FMode = wmRestore) and not IsRunningAsAdmin;
+  FPnlElevate.Visible := FLblAdmin.Visible;
   if NextPageOf(FPage) = wpRun then
     FBtnNext.Caption := 'Executar'
   else
@@ -714,6 +737,28 @@ begin
   if not CanClose then
     MessageDlg('Aguarde o término da operação em andamento.', mtInformation,
       [mbOK], 0);
+end;
+
+procedure TMainWizard.ElevateClick(Sender: TObject);
+var
+  Info: TShellExecuteInfo;
+begin
+  FLogger.Info('Reiniciando como administrador');
+  FillChar(Info, SizeOf(Info), 0);
+  Info.cbSize := SizeOf(Info);
+  Info.fMask := SEE_MASK_NOASYNC;
+  Info.Wnd := Handle;
+  Info.lpVerb := 'runas';
+  Info.lpFile := PChar(ParamStr(0));
+  Info.nShow := SW_SHOWNORMAL;
+  if ShellExecuteEx(@Info) then
+    Close
+  else if GetLastError = ERROR_CANCELLED then
+    MessageDlg('A elevação foi cancelada. O programa continua sem privilégios de administrador.',
+      mtWarning, [mbOK], 0)
+  else
+    MessageDlg('Não foi possível reiniciar como administrador: ' +
+      SysErrorMessage(GetLastError), mtError, [mbOK], 0);
 end;
 
 procedure TMainWizard.ModeClick(Sender: TObject);
