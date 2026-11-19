@@ -227,7 +227,6 @@ begin
   CfgFile := ExtractFilePath(ParamStr(0)) + CONFIG_FILE_NAME;
   if FileExists(CfgFile) then
     LoadToolConfig(CfgFile, FConfig, FLogger);
-  CreateVersionDetector(FLogger).Detect(FInstalled);
 
   Caption := 'Delphi Backup & Restore ' + ToolVersion;
   BorderStyle := bsSingle;
@@ -239,6 +238,8 @@ begin
   Font.Size := 9;
   OnCloseQuery := WizardCloseQuery;
   BuildUI;
+  { after BuildUI: detection logs go to the memo }
+  CreateVersionDetector(FLogger).Detect(FInstalled);
   ShowPage(wpMode);
 end;
 
@@ -611,7 +612,9 @@ begin
   Msg := AText;
   TThread.Queue(nil, procedure
     begin
-      if not FClosing then
+      { the memo does not exist before BuildUI; on the main thread Queue runs the
+        procedure immediately }
+      if not FClosing and (FMemo <> nil) then
         FMemo.Lines.Add(Msg);
     end);
 end;

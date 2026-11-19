@@ -552,8 +552,15 @@ begin
     finally
       R.Free;
     end;
-    AddItem(AItems, ikFolder, icBoss,
-      IncludeTrailingPathDelimiter(GetUserProfileDir) + '.boss', '');
+    S := IncludeTrailingPathDelimiter(GetUserProfileDir) + '.boss';
+    AddItem(AItems, ikFolder, icBoss, S, '');
+    { .boss also shows up in library paths: keep it in the Boss category, global }
+    It := AItems.FindBySource(ikFolder, S);
+    if It <> nil then
+    begin
+      It.Category := icBoss;
+      It.Versions.Clear;
+    end;
     if AConfig <> nil then
     begin
       for I := 0 to AConfig.ExtraFolders.Count - 1 do
