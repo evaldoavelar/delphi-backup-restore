@@ -276,15 +276,42 @@ begin
     AList.Add(P);
 end;
 
+{ "C:\x" or "\\server\share\x". Drive-relative ("C:x", "C:") and relative paths
+  are resolved against the current folder by Windows, so they are never trusted. }
+function IsAbsolutePath(const APath: string): Boolean;
+begin
+  Result := ((Length(APath) >= 3) and (APath[2] = ':') and
+    CharInSet(APath[3], ['\', '/'])) or (Copy(APath, 1, 2) = '\\');
+end;
+
+{ "\\server" or "\\server\share" (with or without trailing backslash) }
+function IsUncShareRoot(const APath: string): Boolean;
+var
+  Rest: string;
+  Slashes, I: Integer;
+begin
+  Result := False;
+  if Copy(APath, 1, 2) <> '\\' then
+    Exit;
+  Rest := ExcludeTrailingPathDelimiter(Copy(APath, 3, MaxInt));
+  Slashes := 0;
+  for I := 1 to Length(Rest) do
+    if Rest[I] = '\' then
+      Inc(Slashes);
+  Result := Slashes <= 1;
+end;
+
 function TPathSafety.IsContainer(const APath: string): Boolean;
 var
   P: string;
   I: Integer;
 begin
+  { a non-absolute path is never a safe root }
+  if not IsAbsolutePath(Trim(APath)) then
+    Exit(True);
   P := NormalizePath(APath);
-  { drive roots ("C:", "C:\") and UNC share roots ("\\server\share") }
-  Result := (P = '') or (Length(P) <= 3) or
-    ((Copy(P, 1, 2) = '\\') and (Length(ExtractFileDir(P)) <= 2));
+  { drive roots ("C:\") and UNC share roots ("\\server\share") }
+  Result := (P = '') or (Length(P) <= 3) or IsUncShareRoot(P);
   if Result then
     Exit;
   for I := 0 to FContainers.Count - 1 do
@@ -333,13 +360,19 @@ var
   Current, Parent: string;
 begin
   Result := '';
+  if not IsAbsolutePath(Trim(APath)) then
+    Exit;
   Current := NormalizePath(APath);
   if (Current = '') or IsUnsafeRoot(Current) or IsInsideProtected(Current) then
     Exit;
   Result := Current;
   while not IsVcsRoot(Result) do
   begin
-    Parent := ExcludeTrailingPathDelimiter(ExtractFileDir(Result));
+    { ExtractFileDir keeps the root delimiter ("C:\x" -> "C:\"); stripping it would
+      give the drive-relative "C:" = current folder of drive C }
+    Parent := ExtractFileDir(Result);
+    if (Length(Parent) > 3) then
+      Parent := ExcludeTrailingPathDelimiter(Parent);
     if (Parent = '') or SameText(Parent, Result) then
       Break;
     if IsUnsafeRoot(Parent) then
