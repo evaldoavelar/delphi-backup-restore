@@ -1,0 +1,90 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build & Release
+    runs-on: [self-hosted, windows, delphi]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build executables and execute unit tests
+        shell: cmd
+        run: build.bat --tests
+
+      - name: Package and Publish GitHub Release
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          # 1. Read current version from VERSION file
+          $verRaw = Get-Content -Path "VERSION" -Raw
+          $VERSION = $verRaw.Trim()
+          if (-not $VERSION) {
+            Write-Error "VERSION file is empty!"
+            exit 1
+          }
+          $tag = "v$VERSION"
+          Write-Host "Preparing release for $tag..."
+
+          # 2. Check if Git tag already exists
+          git fetch --tags
+          $existing = git tag -l $tag
+          if ($existing) {
+            Write-Error "Release aborted: Git tag $tag already exists in repository!"
+            exit 1
+          }
+
+          # 3. Create release zip package containing both exes, README and LICENSE
+          $zipName = "DelphiBackupRestore-$tag.zip"
+          Write-Host "Creating archive: $zipName"
+          Compress-Archive -Path bin\DelphiBackupRestore.exe, bin\DelphiBackupRestoreCli.exe, README.md, LICENSE -DestinationPath $zipName -Force
+
+          # 4. Generate SHA256SUMS for the archive and binaries
+          Write-Host "Generating SHA256 checksums..."
+          $hashZip = (Get-FileHash -Path $zipName -Algorithm SHA256).Hash.ToLower()
+          $hashGui = (Get-FileHash -Path bin\DelphiBackupRestore.exe -Algorithm SHA256).Hash.ToLower()
+          $hashCli = (Get-FileHash -Path bin\DelphiBackupRestoreCli.exe -Algorithm SHA256).Hash.ToLower()
+
+          @(
+            "$hashZip  $zipName",
+            "$hashGui  DelphiBackupRestore.exe",
+            "$hashCli  DelphiBackupRestoreCli.exe"
+          ) | Set-Content -Path "SHA256SUMS" -Encoding ascii
+
+          # 5. Generate release notes from git commits
+          Write-Host "Generating release notes..."
+          $prevTag = (git tag -l "v*" --sort=-v:refname | Select-Object -First 1)
+          if ($prevTag) {
+            Write-Host "Previous tag detected: $prevTag. Extracting commits from $prevTag..HEAD"
+            git log --no-merges --pretty="- %s" "$prevTag..HEAD" | Out-File -FilePath notes.md -Encoding utf8
+          } else {
+            Write-Host "No previous tag detected. Extracting all commits."
+            git log --no-merges --pretty="- %s" | Out-File -FilePath notes.md -Encoding utf8
+          }
+
+          # 6. Create and push tag
+          Write-Host "Tagging commit with $tag..."
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a $tag -m "Release $tag"
+          if ($LASTEXITCODE -ne 0) { Write-Error "git tag failed"; exit 1 }
+          git push origin $tag
+          if ($LASTEXITCODE -ne 0) { Write-Error "git push of $tag failed"; exit 1 }
+
+          # 7. Create GitHub Release using GitHub CLI (gh)
+          Write-Host "Publishing GitHub release for $tag..."
+          gh release create $tag $zipName SHA256SUMS --title $tag --notes-file notes.md
+          if ($LASTEXITCODE -ne 0) { Write-Error "gh release create failed"; exit 1 }

@@ -3,6 +3,76 @@
 Contrato de implementação. Tipos compartilhados vivem em `src/Core.Types.pas` (**não alterar sem
 combinar** — todas as units dependem dele). Cada unit abaixo tem um dono; não edite unit de outro dono.
 
+## Visão geral dos módulos
+
+```mermaid
+flowchart TD
+    UI["UI.MainWizard<br/>(GUI, DelphiBackupRestore.exe)"] --> BE
+    CLI["Cli.Runner<br/>(console, DelphiBackupRestoreCli.exe)"] --> BE
+    UI --> RE
+    CLI --> RE
+    UI --> CE
+    CLI --> CE
+    UI --> DS["Core.DllScanner<br/>PE imports · varredura System32"]
+    CLI --> DS
+    BE["Core.BackupEngine"] --> PD["Core.PathDiscovery<br/>TPathSafety"]
+    BE --> MF["Core.Manifest"]
+    RE["Core.RestoreEngine"] --> MF
+    CE["Core.CompareEngine"] --> MF
+    PD --> VD["Core.VersionDetector"]
+    VD --> VC["Core.VersionCatalog"]
+    BE --> PR["Core.ProcessRunner<br/>robocopy · reg · tar"]
+    RE --> PR
+    CE --> PR
+    BASE["Core.Types (contratos) · Core.SystemUtils · Core.Logger"]
+    MF -.-> BASE
+    PR -.-> BASE
+    PD -.-> BASE
+```
+
+## Sequência do restore
+
+```mermaid
+sequenceDiagram
+    actor U as Usuário
+    participant R as TRestoreEngine
+    participant P as IProcessRunner
+    U->>R: Open(pasta ou .zip)
+    R->>P: tar -x (se zip) para %TEMP%
+    U->>R: Precheck(opções, versões instaladas)
+    R-->>U: EPrecheckError (sem admin, IDE aberta, versão ausente)
+    U->>R: Execute
+    R->>P: reg export do registro atual (rede de segurança em %TEMP%)
+    loop cada versão, da mais antiga para a mais nova
+        R->>P: robocopy /MIR das pastas da versão (cada pasta uma vez)
+        R->>P: reg delete + reg import (remapeado se o perfil mudou)
+    end
+    R->>P: itens globais, DLLs (nunca rebaixa) e merge do PATH do usuário
+```
+
+## Regras de segurança da descoberta
+
+Uma pasta raiz de backup **nunca** pode ser um contêiner do sistema (raiz de drive, `Windows`,
+`Program Files` — os três: `ProgramW6432`, `ProgramFiles`, `ProgramFiles(x86)` —, `ProgramData`, `Users`,
+perfil, Documents, AppData Roaming/Local, Public, Public Documents), nem conter a instalação ou as pastas de
+configuração (`RootDir`, `BDSCOMMONDIR`, `BDSUSERDIR`, AppData) de **qualquer** Delphi instalado, e nada dentro
+do Windows é copiado. O `Environment Variables\PATH` do BDS **não** é fonte de pastas (contém o PATH inteiro do
+sistema). As regras vivem em `TPathSafety` (`Core.PathDiscovery`), valem na descoberta (filtro final) e são
+verificadas de novo pelo `TBackupEngine` antes de copiar (aborta). Cobertas por `tests/Tests.Core.Safety.pas`.
+
+```mermaid
+flowchart TD
+    A["Caminho de uma Library Path"] --> B{"Dentro do Windows ou da IDE,<br/>ou é contêiner do sistema?"}
+    B -- "sim" --> N["Ignora: sem raiz"]
+    B -- "não" --> C["raiz = caminho"]
+    C --> D{"raiz tem .git / .svn / .hg?"}
+    D -- "sim" --> OK["Usa a raiz"]
+    D -- "não" --> E{"o pai é contêiner ou contém<br/>instalação/config de algum Delphi?"}
+    E -- "sim" --> OK
+    E -- "não" --> F["raiz = pai"]
+    F --> D
+```
+
 ## Regras de compatibilidade (Delphi XE8 = CompilerVersion 29 até a mais nova)
 - Proibido: inline `var`/`const` dentro de blocos, inferência de tipo, managed records (`class operator
   Initialize`), expressão ternária `if ... then ... else` como valor, `TJSONObject.GetValue<T>(path)`,

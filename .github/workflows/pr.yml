@@ -1,0 +1,127 @@
+name: PR Validation
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  lint:
+    name: Lint & Compatibility Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify no .dfm or .dproj files are tracked
+        run: |
+          echo "Checking for forbidden tracked .dfm or .dproj files..."
+          tracked_files=$(git ls-files '*.dfm' '*.dproj' '**/*.dfm' '**/*.dproj')
+          if [ -n "$tracked_files" ]; then
+            echo "::error::Tracked .dfm or .dproj files detected! Forms must be constructed in code and projects built via build.bat:"
+            echo "$tracked_files"
+            exit 1
+          fi
+          echo "No .dfm or .dproj files tracked."
+
+      - name: Verify UTF-8 BOM on Pascal source files
+        run: |
+          echo "Checking for UTF-8 BOM (bytes EF BB BF) on .pas and .dpr files..."
+          python3 -c "
+          import sys, glob
+
+          files = (
+              glob.glob('src/**/*.pas', recursive=True) +
+              glob.glob('src/**/*.dpr', recursive=True) +
+              glob.glob('tests/**/*.pas', recursive=True) +
+              glob.glob('tests/**/*.dpr', recursive=True)
+          )
+
+          missing_bom = []
+          for f in sorted(files):
+              with open(f, 'rb') as fp:
+                  bom = fp.read(3)
+                  if bom != b'\xef\xbb\xbf':
+                      missing_bom.append(f)
+
+          if missing_bom:
+              print('::error::The following files are missing the required UTF-8 BOM (EF BB BF):')
+              for f in missing_bom:
+                  print(f'  - {f}')
+              sys.exit(1)
+
+          print(f'UTF-8 BOM check passed successfully on {len(files)} files.')
+          "
+
+      - name: Grep forbidden Delphi XE8 constructs
+        run: |
+          has_error=0
+          # grep exit codes: 0 = found (violation), 1 = not found, >= 2 = grep error.
+          # A grep error must fail the job, never pass silently.
+          check() {
+            out=$(grep -rnIE "$1" src/ tests/)
+            rc=$?
+            if [ "$rc" -eq 0 ]; then
+              echo "$out"
+              echo "::error::$2"
+              has_error=1
+            elif [ "$rc" -ge 2 ]; then
+              echo "::error::grep failed (exit $rc) checking: $2"
+              has_error=1
+            fi
+          }
+          check 'System\.(Threading|Net\.)' 'System.Threading / System.Net are not available on Delphi XE8.'
+          check '\bvar[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]*:=' 'Inline var with initialization (var X := ...) requires Delphi 10.3+.'
+          check '\bconst[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]*:=' 'Inline const (const C := ...) requires Delphi 10.3+.'
+          if [ "$has_error" -ne 0 ]; then
+            exit 1
+          fi
+          echo "Delphi XE8 compatibility check passed."
+
+      - name: Validate VERSION against latest Git tag
+        run: |
+          git fetch --tags --force || true
+          latest_tag=$(git tag -l 'v*' --sort=-v:refname | head -n 1)
+          curr_ver=$(tr -d ' \r\n' < VERSION)
+          if ! echo "$curr_ver" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::VERSION '$curr_ver' is not semver (MAJOR.MINOR.PATCH)."
+            exit 1
+          fi
+          if [ -z "$latest_tag" ]; then
+            echo "No v* tags yet. VERSION $curr_ver accepted."
+            exit 0
+          fi
+          prev_ver="${latest_tag#v}"
+          echo "Latest tag: $latest_tag  Current VERSION: $curr_ver"
+          if [ "$curr_ver" = "$prev_ver" ]; then
+            echo "::error::VERSION $curr_ver equals the latest tag. Bump VERSION for PRs to main."
+            exit 1
+          fi
+          highest=$(printf '%s\n%s\n' "$prev_ver" "$curr_ver" | sort -V | tail -n 1)
+          if [ "$highest" != "$curr_ver" ]; then
+            echo "::error::VERSION $curr_ver is lower than the latest tag $prev_ver."
+            exit 1
+          fi
+          echo "VERSION check passed: $curr_ver > $prev_ver"
+
+  build-test:
+    name: Build & Run Tests
+    runs-on: [self-hosted, windows, delphi]
+    needs: lint
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build executables and execute unit tests
+        shell: cmd
+        run: build.bat --tests
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: DelphiBackupRestore-binaries
+          path: |
+            bin/DelphiBackupRestore.exe
+            bin/DelphiBackupRestoreCli.exe
