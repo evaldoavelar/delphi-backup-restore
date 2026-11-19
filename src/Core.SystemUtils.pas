@@ -425,13 +425,22 @@ end;
 function DeleteTree(const AFolder: string): Boolean;
 var
   P: string;
+  Attempt: Integer;
 begin
   P := NormalizePath(AFolder);
   { never delete a drive root or an empty/invalid path }
   if (P = '') or (Length(P) <= 3) then
     Exit(False);
-  if DirectoryExists(P) then
-    DeleteTreeLong(LongPathPrefix(P));
+  { indexers (TortoiseSVN/TortoiseGit caches, antivirus, Windows Search) may hold a
+    file of a freshly written .svn/.git copy for a few seconds: retry }
+  for Attempt := 1 to 5 do
+  begin
+    if DirectoryExists(P) then
+      DeleteTreeLong(LongPathPrefix(P));
+    if not DirectoryExists(P) then
+      Break;
+    Sleep(2000);
+  end;
   Result := not DirectoryExists(P);
 end;
 
