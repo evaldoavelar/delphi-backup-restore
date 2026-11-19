@@ -70,20 +70,25 @@ function ResolveBdsMacros(const AText: string; AVersion: TDelphiVersion;
 
 begin
   Result := AText;
-  ReplaceMacro('BDSCOMMONDIR', AVersion.CommonDir);
-  ReplaceMacro('BDSUSERDIR', AVersion.UserDir);
+  ReplaceMacro('BDSCOMMONDIR',
+    ExcludeTrailingPathDelimiter(AVersion.CommonDir));
+  ReplaceMacro('BDSUSERDIR', ExcludeTrailingPathDelimiter(AVersion.UserDir));
   ReplaceMacro('BDSLIB', IncludeTrailingPathDelimiter(AVersion.RootDir)
     + 'lib');
   ReplaceMacro('BDSINCLUDE', IncludeTrailingPathDelimiter(AVersion.RootDir) +
     'include');
   ReplaceMacro('BDSBIN', IncludeTrailingPathDelimiter(AVersion.RootDir)
     + 'bin');
-  ReplaceMacro('BDS', AVersion.RootDir);
+  ReplaceMacro('BDS', ExcludeTrailingPathDelimiter(AVersion.RootDir));
   ReplaceMacro('Platform', APlatform);
   ReplaceMacro('Config', 'Release');
   Result := ExpandEnvVars(Result);
   if (Pos('$(', Result) > 0) or (Pos('%', Result) > 0) then
-    Result := '';
+    Exit('');
+  { "C:\x\\bin" -> "C:\x\bin"; keep the leading "\\" of UNC paths }
+  while Pos('\\', Copy(Result, 2, MaxInt)) > 0 do
+    Result := Copy(Result, 1, 1) + StringReplace(Copy(Result, 2, MaxInt), '\\',
+      '\', [rfReplaceAll]);
 end;
 
 procedure ReduceToRootFolders(APaths: TStrings);
@@ -319,7 +324,8 @@ end;
 
 function TPathSafety.IsUnsafeRoot(const APath: string): Boolean;
 begin
-  Result := IsContainer(APath) or IsForbidden(APath) or ContainsProtected(APath);
+  Result := IsContainer(APath) or IsForbidden(APath) or
+    ContainsProtected(APath);
 end;
 
 function TPathSafety.ComponentRoot(const APath: string): string;
@@ -395,8 +401,8 @@ var
     Root := FSafety.ComponentRoot(P);
     if Root = '' then
     begin
-      FLogger.Debug('Caminho ignorado por segurança (pasta de sistema ou da IDE): '
-        + P);
+      FLogger.Debug
+        ('Caminho ignorado por segurança (pasta de sistema ou da IDE): ' + P);
       Exit;
     end;
     AddItem(AItems, ikFolder, icComponents, Root, AVersion.BdsVersion);
@@ -596,12 +602,14 @@ begin
       It := AItems[I];
       if It.Kind <> ikFolder then
         Continue;
-      if FSafety.IsContainer(It.SourcePath) or FSafety.IsForbidden(It.SourcePath)
-        or ((It.Category <> icIdeConfig) and
-        FSafety.ContainsProtected(It.SourcePath)) then
+      if FSafety.IsContainer(It.SourcePath) or
+        FSafety.IsForbidden(It.SourcePath) or
+        ((It.Category <> icIdeConfig) and FSafety.ContainsProtected
+        (It.SourcePath)) then
       begin
-        FLogger.Warn('Pasta descartada por segurança (sistema ou instalação da IDE): '
-          + It.SourcePath);
+        FLogger.Warn
+          ('Pasta descartada por segurança (sistema ou instalação da IDE): ' +
+          It.SourcePath);
         AItems.Delete(I);
       end;
     end;

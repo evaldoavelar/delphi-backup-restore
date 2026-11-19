@@ -262,7 +262,10 @@ begin
   if Trim(APath) = '' then
     Exit;
   try
-    Result := ExcludeTrailingPathDelimiter(ExpandFileName(APath));
+    Result := ExpandFileName(APath);
+    { keep drive roots as "C:\": a bare "C:" means "current folder of drive C" }
+    if not((Length(Result) = 3) and (Result[2] = ':')) then
+      Result := ExcludeTrailingPathDelimiter(Result);
     if Result = '' then
       Result := '\';
   except

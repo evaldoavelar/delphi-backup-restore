@@ -7,7 +7,11 @@ uses Core.Types;
 function ProductNameForVersion(AEra: TDelphiEra;
   const ABdsVersion: string): string;
 function RegistryRootForEra(AEra: TDelphiEra): string;
-function StudioFolderName(AEra: TDelphiEra): string;
+{ Folder under Documents / Public Documents used by the IDE:
+  2005/2006 'Borland Studio Projects', 2007..XE5 'RAD Studio',
+  XE6 (BDS 14.0) and later 'Embarcadero\Studio'. Delphi 5..7 have none (''). }
+function StudioFolderName(AEra: TDelphiEra;
+  const ABdsVersion: string = ''): string;
 
 implementation
 
@@ -99,15 +103,28 @@ begin
   end;
 end;
 
-function StudioFolderName(AEra: TDelphiEra): string;
+function StudioFolderName(AEra: TDelphiEra;
+  const ABdsVersion: string = ''): string;
+var
+  Major: Integer;
 begin
+  Major := StrToIntDef(Copy(ABdsVersion, 1, Pos('.', ABdsVersion + '.')
+    - 1), 0);
   case AEra of
     deBorlandDelphi:
-      Result := 'Borland Studio Projects';
+      Result := '';
     deBorlandBDS:
+      if (Major > 0) and (Major < 5) then
+        Result := 'Borland Studio Projects'
+      else
+        Result := 'RAD Studio';
+    deCodeGear:
       Result := 'RAD Studio';
   else
-    Result := 'Embarcadero\Studio';
+    if (Major > 0) and (Major < 14) then
+      Result := 'RAD Studio'
+    else
+      Result := 'Embarcadero\Studio';
   end;
 end;
 

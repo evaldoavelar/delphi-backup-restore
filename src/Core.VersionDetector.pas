@@ -132,13 +132,13 @@ begin
             'Documents\Borland\Studio'
         else
           Common := IncludeTrailingPathDelimiter(Base) + 'Documents\' +
-            StudioFolderName(AEra);
+            StudioFolderName(AEra, ABdsVersion);
         Common := IncludeTrailingPathDelimiter(Common) + ABdsVersion;
       end;
       V.CommonDir := ExcludeTrailingPathDelimiter(ExpandEnvVars(Common));
       Base := GetDocumentsDir;
       V.UserDir := ExcludeTrailingPathDelimiter
-        (IncludeTrailingPathDelimiter(Base) + StudioFolderName(AEra) + '\' +
+        (IncludeTrailingPathDelimiter(Base) + StudioFolderName(AEra, ABdsVersion) + '\' +
         ABdsVersion);
       AppBase := GetAppDataDir;
       if AEra = deBorlandDelphi then
