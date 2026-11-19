@@ -46,8 +46,17 @@ begin
 end;
 
 function TProcessRunner.Quote(const S: string): string;
+var
+  Value: string;
 begin
-  Result := '"' + StringReplace(S, '"', '\"', [rfReplaceAll]) + '"';
+  { A trailing backslash before the closing quote would escape it ("C:\x\" -> C:\x").
+    Strip it; a drive root keeps a doubled backslash ("C:\\"). }
+  Value := StringReplace(S, '"', '\"', [rfReplaceAll]);
+  if (Length(Value) > 3) and (Value[Length(Value)] = '\') then
+    Value := ExcludeTrailingPathDelimiter(Value)
+  else if (Length(Value) = 3) and (Value[2] = ':') and (Value[3] = '\') then
+    Value := Value + '\';
+  Result := '"' + Value + '"';
 end;
 
 function TProcessRunner.Run(const AExe, AArgs, AWorkDir: string;
@@ -70,7 +79,9 @@ var
   CommandLine: string;
   Buffer: array [0 .. 8191] of Byte;
   ReadCount, Available: DWORD;
-  Bytes: TBytes;
+  RawOutput: TBytesStream;
+  Encoding: TEncoding;
+  WorkDir: PChar;
 begin
   AOutput := '';
   FillChar(Security, SizeOf(Security), 0);
@@ -94,12 +105,17 @@ begin
     if AArgs <> '' then
       CommandLine := CommandLine + ' ' + AArgs;
     UniqueString(CommandLine);
+    { an empty string is an invalid directory for CreateProcess (error 123): pass nil }
+    WorkDir := nil;
+    if AWorkDir <> '' then
+      WorkDir := PChar(AWorkDir);
     FillChar(ProcessInfo, SizeOf(ProcessInfo), 0);
     if not CreateProcess(nil, PChar(CommandLine), nil, nil, True,
-      CREATE_NO_WINDOW, nil, PChar(AWorkDir), Startup, ProcessInfo) then
+      CREATE_NO_WINDOW, nil, WorkDir, Startup, ProcessInfo) then
       RaiseLastOSError;
     CloseHandle(WritePipe);
     WritePipe := 0;
+    RawOutput := TBytesStream.Create;
     try
       repeat
         if not PeekNamedPipe(ReadPipe, nil, 0, nil, @Available, nil) then
@@ -114,12 +130,7 @@ begin
             Available := SizeOf(Buffer);
           if ReadFile(ReadPipe, Buffer[0], Available, ReadCount, nil) and
             (ReadCount > 0) then
-          begin
-            SetLength(Bytes, ReadCount);
-            Move(Buffer[0], Bytes[0], ReadCount);
-            AOutput := AOutput + TEncoding.GetEncoding(GetOEMCP)
-              .GetString(Bytes);
-          end;
+            RawOutput.WriteBuffer(Buffer[0], ReadCount);
         end
         else
           WaitForSingleObject(ProcessInfo.hProcess, 20);
@@ -127,14 +138,18 @@ begin
         = WAIT_OBJECT_0);
       while ReadFile(ReadPipe, Buffer[0], SizeOf(Buffer), ReadCount, nil) and
         (ReadCount > 0) do
-      begin
-        SetLength(Bytes, ReadCount);
-        Move(Buffer[0], Bytes[0], ReadCount);
-        AOutput := AOutput + TEncoding.GetEncoding(GetOEMCP).GetString(Bytes);
-      end;
+        RawOutput.WriteBuffer(Buffer[0], ReadCount);
       if not GetExitCodeProcess(ProcessInfo.hProcess, Result) then
         RaiseLastOSError;
+      { decode once, at the end, so multi-chunk output is never split mid-character }
+      Encoding := TEncoding.GetEncoding(GetOEMCP);
+      try
+        AOutput := Encoding.GetString(RawOutput.Bytes, 0, RawOutput.Size);
+      finally
+        Encoding.Free;
+      end;
     finally
+      RawOutput.Free;
       CloseHandle(ProcessInfo.hThread);
       CloseHandle(ProcessInfo.hProcess);
     end;

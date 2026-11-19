@@ -478,6 +478,12 @@ begin
   ExcludeDirs.Add('__recovery');
   ExcludeDirs.Add('Samples');
   ExcludeFiles.Add('*.~*');
+  { Platform SDKs downloaded into CatalogRepository by the IDE installer/GetIt:
+    gigabytes that a reinstall of the IDE brings back. Override in the config file. }
+  ExcludeDirs.Add('AndroidNDK-*');
+  ExcludeDirs.Add('AndroidSDK-*');
+  ExcludeDirs.Add('OpenJDK-*');
+  ExcludeDirs.Add('AdoptOpenJDK-*');
 end;
 
 destructor TToolConfig.Destroy;

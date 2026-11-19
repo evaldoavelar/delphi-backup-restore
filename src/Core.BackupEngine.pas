@@ -9,11 +9,14 @@ type
   private
     FLogger: ILogger;
     FRunner: IProcessRunner;
+    FFailureCount: Integer;
   public
     constructor Create(const ALogger: ILogger; const ARunner: IProcessRunner);
     function Execute(const AOptions: TBackupOptions;
       AVersions: TDelphiVersionList; AItems: TBackupItemList;
       AConfig: TToolConfig; const AProgress: TProgressProc): string;
+    { Items that could not be copied/exported in the last Execute (0 = complete backup). }
+    property FailureCount: Integer read FFailureCount;
   end;
 
 implementation
@@ -43,6 +46,7 @@ var
   I, Failures: Integer;
   D, F: TStrings;
 begin
+  FFailureCount := 0;
   FLogger.Info('Iniciando backup.');
   SelectedVersions := TDelphiVersionList.Create(False);
   Done := TBackupItemList.Create(False);
@@ -152,6 +156,7 @@ begin
           raise EDelphiBackupError.Create('Falha ao compactar backup.');
         Result := Zip;
       end;
+      FFailureCount := Failures;
       FLogger.Info(Format('Backup concluído: %s; falhas: %d.',
         [Result, Failures]));
     except

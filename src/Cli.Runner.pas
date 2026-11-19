@@ -323,9 +323,10 @@ var
   Options: TBackupOptions;
   Bds: TArray<string>;
   It: TBackupItem;
-  Added, I: Integer;
+  Added, I, Failures: Integer;
   OutPath: string;
 begin
+  Failures := 0;
   if AOpts.Dest = '' then
   begin
     Say('Erro: o comando backup exige --dest <pasta>.');
@@ -397,11 +398,21 @@ begin
         begin
           Say(Format('[%d/%d] %s', [ACurrent, ATotal, AStep]));
         end);
+      Failures := Engine.FailureCount;
     finally
       Engine.Free;
     end;
-    Say('Backup concluído: ' + OutPath);
-    Result := EXIT_OK;
+    if Failures > 0 then
+    begin
+      Say(Format('Backup concluído com %d falha(s): %s (veja o backup.log)',
+        [Failures, OutPath]));
+      Result := EXIT_ERROR;
+    end
+    else
+    begin
+      Say('Backup concluído: ' + OutPath);
+      Result := EXIT_OK;
+    end;
   finally
     Config.Free;
     Items.Free;
