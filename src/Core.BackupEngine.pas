@@ -19,9 +19,104 @@ type
     property FailureCount: Integer read FFailureCount;
   end;
 
+{ True when the item would be processed by a backup with these options. }
+function ItemInScope(AItem: TBackupItem; const AOptions: TBackupOptions;
+  AVersions: TDelphiVersionList): Boolean;
+{ Bytes the item occupies on disk (metadata only, files are never opened).
+  Registry keys count as 0. }
+function EstimateItemSize(AItem: TBackupItem; AConfig: TToolConfig): Int64;
+{ Free bytes on the volume of APath (walks up to the first existing folder). }
+function FreeSpaceAt(const APath: string): Int64;
+function FormatBytes(ABytes: Int64): string;
+
 implementation
 
-uses System.Classes, System.IOUtils, Core.SystemUtils, Core.Manifest;
+uses System.Classes, System.IOUtils, Winapi.Windows, Core.SystemUtils,
+  Core.Manifest, Core.PathDiscovery;
+
+function ItemInScope(AItem: TBackupItem; const AOptions: TBackupOptions;
+  AVersions: TDelphiVersionList): Boolean;
+var
+  V: TDelphiVersion;
+begin
+  Result := False;
+  if not AItem.Selected or not(AItem.Category in AOptions.Categories) then
+    Exit;
+  if AItem.Versions.Count = 0 then
+    Exit(True);
+  for V in AVersions do
+    if ((Length(AOptions.Versions) = 0) or ContainsText(AOptions.Versions,
+      V.BdsVersion)) and AItem.UsedByVersion(V.BdsVersion) then
+      Exit(True);
+end;
+
+function EstimateItemSize(AItem: TBackupItem; AConfig: TToolConfig): Int64;
+var
+  M: TManifestItem;
+  F: TManifestFile;
+  D, X: TStrings;
+  Info: TWin32FileAttributeData;
+begin
+  Result := 0;
+  case AItem.Kind of
+    ikFolder:
+      begin
+        D := nil;
+        X := nil;
+        if AConfig <> nil then
+        begin
+          D := AConfig.ExcludeDirs;
+          X := AConfig.ExcludeFiles;
+        end;
+        M := TManifestItem.Create;
+        try
+          { ScanItemFiles reads M.Item (kind/path); M owns and frees it }
+          M.Item := TBackupItem.Create;
+          M.Item.Kind := AItem.Kind;
+          M.Item.SourcePath := AItem.SourcePath;
+          ScanItemFiles(AItem.SourcePath, M, D, X);
+          for F in M.Files do
+            Inc(Result, F.Size);
+        finally
+          M.Free;
+        end;
+      end;
+    ikFile, ikDll:
+      if GetFileAttributesEx(PChar(AItem.SourcePath), GetFileExInfoStandard, @Info)
+      then
+        Result := (Int64(Info.nFileSizeHigh) shl 32) or Info.nFileSizeLow;
+  end;
+end;
+
+function FreeSpaceAt(const APath: string): Int64;
+var
+  P: string;
+  FreeAvail, Total, TotalFree: Int64;
+begin
+  Result := -1;
+  P := NormalizePath(APath);
+  while (P <> '') and not DirectoryExists(P) do
+  begin
+    if SameText(ExtractFileDir(P), P) then
+      Break;
+    P := ExtractFileDir(P);
+  end;
+  if P = '' then
+    Exit;
+  if GetDiskFreeSpaceEx(PChar(IncludeTrailingPathDelimiter(P)), FreeAvail,
+    Total, @TotalFree) then
+    Result := FreeAvail;
+end;
+
+function FormatBytes(ABytes: Int64): string;
+begin
+  if ABytes >= Int64(1024) * 1024 * 1024 then
+    Result := FormatFloat('0.0', ABytes / (1024.0 * 1024 * 1024)) + ' GB'
+  else if ABytes >= 1024 * 1024 then
+    Result := FormatFloat('0.0', ABytes / (1024.0 * 1024)) + ' MB'
+  else
+    Result := FormatFloat('0', ABytes / 1024.0) + ' KB';
+end;
 
 constructor TBackupEngine.Create(const ALogger: ILogger;
   const ARunner: IProcessRunner);
@@ -45,6 +140,8 @@ var
   OK, Used: Boolean;
   I, Failures, ManifestFailures: Integer;
   D, F: TStrings;
+  Safety: TPathSafety;
+  Estimated, Needed, FreeBytes: Int64;
 begin
   FFailureCount := 0;
   FLogger.Info('Iniciando backup.');
@@ -56,6 +153,48 @@ begin
         if (Length(AOptions.Versions) = 0) or ContainsText(AOptions.Versions,
           V.BdsVersion) then
           SelectedVersions.Add(V);
+
+      { Safety (second layer after Core.PathDiscovery): abort before copying a
+        single byte if a folder is a system container / contains a Delphi install,
+        or if the destination lies inside a folder that would be copied. }
+      Safety := TPathSafety.Create(AVersions);
+      try
+        for It in AItems do
+          if (It.Kind = ikFolder) and ItemInScope(It, AOptions, AVersions) then
+          begin
+            if Safety.IsContainer(It.SourcePath) or
+              Safety.IsForbidden(It.SourcePath) or
+              ((It.Category <> icIdeConfig) and
+              Safety.ContainsProtected(It.SourcePath)) then
+              raise EDelphiBackupError.Create
+                ('Backup abortado: pasta de sistema ou da instalação da IDE na lista: '
+                + It.SourcePath);
+            if IsPathInside(AOptions.Destination, It.SourcePath) then
+              raise EDelphiBackupError.Create
+                ('Backup abortado: o destino está dentro de uma pasta que será copiada ('
+                + It.SourcePath + '). Escolha outro destino.');
+          end;
+      finally
+        Safety.Free;
+      end;
+
+      { free space: estimate (metadata only) and refuse when it does not fit;
+        the zip needs roughly the same space again }
+      Estimated := 0;
+      for It in AItems do
+        if ItemInScope(It, AOptions, AVersions) then
+          Inc(Estimated, EstimateItemSize(It, AConfig));
+      Needed := Estimated + Estimated div 20;
+      if AOptions.CreateZip then
+        Inc(Needed, Estimated);
+      FreeBytes := FreeSpaceAt(AOptions.Destination);
+      FLogger.Info(Format('Tamanho estimado: %s; necessário no destino: %s; livre: %s.',
+        [FormatBytes(Estimated), FormatBytes(Needed), FormatBytes(FreeBytes)]));
+      if (FreeBytes >= 0) and (FreeBytes < Needed) then
+        raise EDelphiBackupError.CreateFmt
+          ('Espaço insuficiente no destino: necessário %s, disponível %s.',
+          [FormatBytes(Needed), FormatBytes(FreeBytes)]);
+
       Root := TPath.Combine(AOptions.Destination, BACKUP_FOLDER_PREFIX +
         MachineName + '_' + FormatDateTime('yyyymmdd_hhnn', Now));
       if TDirectory.Exists(Root) then

@@ -25,6 +25,7 @@ type
     Source: string;
     NoZip: Boolean;
     ScanDlls: Boolean;
+    DryRun: Boolean;
     Categories: TItemCategories;
     CategoriesGiven: Boolean;
     ConfigFile: string;
@@ -95,6 +96,7 @@ begin
   Say('  --source <pasta|zip>  Pasta ou .zip do backup');
   Say('  --no-zip              Não compactar o backup em .zip');
   Say('  --scan-dlls           Incluir DLLs de terceiros encontradas no sistema');
+  Say('  --dry-run             backup: só lista os itens e o tamanho estimado, sem copiar');
   Say('  --categories <lista>  components,ide-config,experts,boss,extra,system-dll');
   Say('  --config <arquivo>    Arquivo de configuração (padrão: ' +
     CONFIG_FILE_NAME + ' ao lado do exe)');
@@ -145,6 +147,7 @@ begin
   AOpts.Source := '';
   AOpts.NoZip := False;
   AOpts.ScanDlls := False;
+  AOpts.DryRun := False;
   AOpts.Categories := [];
   AOpts.CategoriesGiven := False;
   AOpts.ConfigFile := '';
@@ -208,6 +211,8 @@ begin
       AOpts.NoZip := True
     else if Name = '--scan-dlls' then
       AOpts.ScanDlls := True
+    else if Name = '--dry-run' then
+      AOpts.DryRun := True
     else
     begin
       Say('Erro: opção desconhecida "' + Arg + '".');
@@ -314,6 +319,45 @@ begin
   end;
 end;
 
+{ --dry-run: lists what a backup would copy, with sizes; copies nothing. }
+function PrintDryRun(const AOptions: TBackupOptions;
+  AVersions: TDelphiVersionList; AItems: TBackupItemList; AConfig: TToolConfig;
+  const ADest: string): Integer;
+var
+  It: TBackupItem;
+  Size, Total, FreeBytes, Needed: Int64;
+  Count: Integer;
+begin
+  Say('Simulação (--dry-run): nada será copiado.');
+  Total := 0;
+  Count := 0;
+  for It in AItems do
+    if ItemInScope(It, AOptions, AVersions) then
+    begin
+      Size := EstimateItemSize(It, AConfig);
+      Inc(Total, Size);
+      Inc(Count);
+      Say(Format('  %-5s %-11s %10s  %s', [It.Id, ItemCategoryToText(It.Category),
+        FormatBytes(Size), It.SourcePath]));
+    end;
+  Needed := Total + Total div 20;
+  if AOptions.CreateZip then
+    Inc(Needed, Total);
+  Say(Format('%d item(ns); tamanho estimado %s; necessário no destino %s.',
+    [Count, FormatBytes(Total), FormatBytes(Needed)]));
+  Result := EXIT_OK;
+  if ADest <> '' then
+  begin
+    FreeBytes := FreeSpaceAt(ADest);
+    Say(Format('Espaço livre em %s: %s.', [ADest, FormatBytes(FreeBytes)]));
+    if (FreeBytes >= 0) and (FreeBytes < Needed) then
+    begin
+      Say('AVISO: espaço insuficiente para este backup.');
+      Result := EXIT_ERROR;
+    end;
+  end;
+end;
+
 function CmdBackup(const AOpts: TCliOptions; const ALogger: ILogger): Integer;
 var
   Installed, Selected: TDelphiVersionList;
@@ -327,7 +371,7 @@ var
   Added, I, Failures: Integer;
   OutPath: string;
 begin
-  if AOpts.Dest = '' then
+  if (AOpts.Dest = '') and not AOpts.DryRun then
   begin
     Say('Erro: o comando backup exige --dest <pasta>.');
     Exit(EXIT_USAGE);
@@ -389,6 +433,9 @@ begin
     for It in Items do
       if It.Kind <> ikDll then
         It.Selected := It.Category in Options.Categories;
+
+    if AOpts.DryRun then
+      Exit(PrintDryRun(Options, Selected, Items, Config, AOpts.Dest));
 
     Runner := CreateProcessRunner(ALogger);
     Engine := TBackupEngine.Create(ALogger, Runner);

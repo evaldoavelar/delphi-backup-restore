@@ -11,21 +11,51 @@ procedure ReduceToRootFolders(APaths: TStrings);
 function LoadToolConfig(const AFileName: string; AConfig: TToolConfig;
   const ALogger: ILogger): Boolean;
 
+type
+  { Safety rules for backup roots (docs/ARCHITECTURE.md, "Regras de seguranca").
+    A backup root must never be a system container (drive root, Windows, Program
+    Files, ProgramData, Users, profile, Documents, AppData, Public) and must never
+    contain the install or config folders of an installed Delphi. }
+  TPathSafety = class
+  private
+    FContainers: TStringList; // never a backup root
+    FForbidden: TStringList; // nothing inside these is ever backed up
+    FProtected: TStringList; // install + IDE config dirs of every known version
+    procedure AddTo(AList: TStringList; const APath: string);
+  public
+    constructor Create(AVersions: TDelphiVersionList);
+    destructor Destroy; override;
+    function IsContainer(const APath: string): Boolean;
+    function IsForbidden(const APath: string): Boolean;
+    function ContainsProtected(const APath: string): Boolean;
+    function IsInsideProtected(const APath: string): Boolean;
+    { True for folders that must never be copied as a whole. }
+    function IsUnsafeRoot(const APath: string): Boolean;
+    { Highest safe ancestor of a library folder, stopping before containers,
+      before folders holding a Delphi install/config and at VCS roots.
+      Returns '' when the folder itself is unsafe. }
+    function ComponentRoot(const APath: string): string;
+  end;
+
+function IsVcsRoot(const APath: string): Boolean;
+
 implementation
 
 uses System.SysUtils, System.IOUtils, System.JSON, System.Win.Registry,
   System.Generics.Collections,
-  Winapi.Windows, Core.SystemUtils;
+  Winapi.Windows, Winapi.ShlObj, Core.SystemUtils, Core.VersionDetector;
 
 type
   TPathDiscovery = class(TInterfacedObject, IPathDiscovery)
   private
     FLogger: ILogger;
+    FSafety: TPathSafety;
     procedure AddItem(AItems: TBackupItemList; AKind: TItemKind;
       ACategory: TItemCategory; const APath, AVersion: string);
     procedure ReadPaths(AVersion: TDelphiVersion; AItems: TBackupItemList);
   public
     constructor Create(const ALogger: ILogger);
+    destructor Destroy; override;
     procedure Discover(AVersions: TDelphiVersionList; AConfig: TToolConfig;
       AItems: TBackupItemList);
   end;
@@ -169,27 +199,155 @@ begin
     It.Versions.Add(AVersion);
 end;
 
-function ComponentRoot(const APath: string): string;
+function IsVcsRoot(const APath: string): Boolean;
 var
-  P, Parent, Profile, Documents, PublicDir, PF, PF86: string;
+  Base: string;
 begin
-  Result := ExcludeTrailingPathDelimiter(ExpandFileName(APath));
-  Profile := ExcludeTrailingPathDelimiter(GetUserProfileDir);
-  Documents := ExcludeTrailingPathDelimiter(GetDocumentsDir);
-  PublicDir := ExcludeTrailingPathDelimiter(GetPublicDir);
-  PF := ExcludeTrailingPathDelimiter(GetEnvironmentVariable('ProgramFiles'));
-  PF86 := ExcludeTrailingPathDelimiter
-    (GetEnvironmentVariable('ProgramFiles(x86)'));
-  repeat
-    P := Result;
-    Parent := ExcludeTrailingPathDelimiter(ExtractFileDir(P));
-    if (Parent = '') or SameText(Parent, P) or SameText(Parent, Profile) or
-      SameText(Parent, Documents) or SameText(Parent, PublicDir) or
-      SameText(Parent, PF) or SameText(Parent, PF86) or (Length(Parent) <= 3)
-    then
+  Base := IncludeTrailingPathDelimiter(APath);
+  Result := DirectoryExists(Base + '.git') or FileExists(Base + '.git') or
+    DirectoryExists(Base + '.svn') or DirectoryExists(Base + '.hg');
+end;
+
+function CommonDocumentsDir: string;
+var
+  Buffer: array [0 .. MAX_PATH] of Char;
+begin
+  Result := '';
+  if SHGetFolderPath(0, CSIDL_COMMON_DOCUMENTS, 0, 0, Buffer) = S_OK then
+    Result := Buffer;
+end;
+
+{ TPathSafety }
+
+constructor TPathSafety.Create(AVersions: TDelphiVersionList);
+var
+  V: TDelphiVersion;
+  Profile: string;
+begin
+  inherited Create;
+  FContainers := TStringList.Create;
+  FForbidden := TStringList.Create;
+  FProtected := TStringList.Create;
+  Profile := GetUserProfileDir;
+  { 32-bit process: ProgramFiles = "Program Files (x86)"; ProgramW6432 = the 64-bit one }
+  AddTo(FContainers, GetEnvironmentVariable('SystemRoot'));
+  AddTo(FContainers, GetEnvironmentVariable('ProgramW6432'));
+  AddTo(FContainers, GetEnvironmentVariable('ProgramFiles'));
+  AddTo(FContainers, GetEnvironmentVariable('ProgramFiles(x86)'));
+  AddTo(FContainers, GetEnvironmentVariable('ProgramData'));
+  AddTo(FContainers, GetEnvironmentVariable('LOCALAPPDATA'));
+  AddTo(FContainers, GetAppDataDir);
+  AddTo(FContainers, GetDocumentsDir);
+  AddTo(FContainers, GetPublicDir);
+  AddTo(FContainers, CommonDocumentsDir);
+  AddTo(FContainers, Profile);
+  if Profile <> '' then
+    AddTo(FContainers, ExtractFileDir(ExcludeTrailingPathDelimiter(Profile)));
+  AddTo(FForbidden, GetEnvironmentVariable('SystemRoot'));
+  if AVersions <> nil then
+    for V in AVersions do
+    begin
+      AddTo(FProtected, V.RootDir);
+      AddTo(FProtected, V.CommonDir);
+      AddTo(FProtected, V.UserDir);
+      AddTo(FProtected, V.AppDataDir);
+    end;
+end;
+
+destructor TPathSafety.Destroy;
+begin
+  FProtected.Free;
+  FForbidden.Free;
+  FContainers.Free;
+  inherited;
+end;
+
+procedure TPathSafety.AddTo(AList: TStringList; const APath: string);
+var
+  P: string;
+begin
+  P := NormalizePath(APath);
+  if (P <> '') and (AList.IndexOf(P) < 0) then
+    AList.Add(P);
+end;
+
+function TPathSafety.IsContainer(const APath: string): Boolean;
+var
+  P: string;
+  I: Integer;
+begin
+  P := NormalizePath(APath);
+  { drive roots ("C:", "C:\") and UNC share roots ("\\server\share") }
+  Result := (P = '') or (Length(P) <= 3) or
+    ((Copy(P, 1, 2) = '\\') and (Length(ExtractFileDir(P)) <= 2));
+  if Result then
+    Exit;
+  for I := 0 to FContainers.Count - 1 do
+    if SameText(P, FContainers[I]) then
+      Exit(True);
+end;
+
+function TPathSafety.IsForbidden(const APath: string): Boolean;
+var
+  I: Integer;
+begin
+  Result := False;
+  for I := 0 to FForbidden.Count - 1 do
+    if IsPathInside(APath, FForbidden[I]) then
+      Exit(True);
+end;
+
+function TPathSafety.ContainsProtected(const APath: string): Boolean;
+var
+  I: Integer;
+begin
+  Result := False;
+  for I := 0 to FProtected.Count - 1 do
+    if IsPathInside(FProtected[I], APath) then
+      Exit(True);
+end;
+
+function TPathSafety.IsInsideProtected(const APath: string): Boolean;
+var
+  I: Integer;
+begin
+  Result := False;
+  for I := 0 to FProtected.Count - 1 do
+    if IsPathInside(APath, FProtected[I]) then
+      Exit(True);
+end;
+
+function TPathSafety.IsUnsafeRoot(const APath: string): Boolean;
+begin
+  Result := IsContainer(APath) or IsForbidden(APath) or ContainsProtected(APath);
+end;
+
+function TPathSafety.ComponentRoot(const APath: string): string;
+var
+  Current, Parent: string;
+begin
+  Result := '';
+  Current := NormalizePath(APath);
+  if (Current = '') or IsUnsafeRoot(Current) or IsInsideProtected(Current) then
+    Exit;
+  Result := Current;
+  while not IsVcsRoot(Result) do
+  begin
+    Parent := ExcludeTrailingPathDelimiter(ExtractFileDir(Result));
+    if (Parent = '') or SameText(Parent, Result) then
+      Break;
+    if IsUnsafeRoot(Parent) then
       Break;
     Result := Parent;
-  until False;
+  end;
+end;
+
+{ TPathDiscovery }
+
+destructor TPathDiscovery.Destroy;
+begin
+  FSafety.Free;
+  inherited;
 end;
 
 procedure TPathDiscovery.ReadPaths(AVersion: TDelphiVersion;
@@ -234,7 +392,13 @@ var
     end;
     if not DirectoryExists(P) or IsPathInside(P, AVersion.RootDir) then
       Exit;
-    Root := ComponentRoot(P);
+    Root := FSafety.ComponentRoot(P);
+    if Root = '' then
+    begin
+      FLogger.Debug('Caminho ignorado por segurança (pasta de sistema ou da IDE): '
+        + P);
+      Exit;
+    end;
     AddItem(AItems, ikFolder, icComponents, Root, AVersion.BdsVersion);
   end;
 
@@ -287,7 +451,9 @@ begin
       end;
     end;
     Platform := 'Win32';
-    for L := 0 to 4 do
+    { 'Environment Variables\PATH' is NOT a source: it snapshots the whole system
+      PATH (Program Files, Windows). It is restored with the IDE registry key. }
+    for L := 0 to 3 do
     begin
       case L of
         0:
@@ -296,10 +462,8 @@ begin
           Key := 'Known IDE Packages';
         2:
           Key := 'Disabled Packages';
-        3:
-          Key := 'Experts';
       else
-        Key := 'Environment Variables';
+        Key := 'Experts';
       end;
       if R.OpenKeyReadOnly(AVersion.RegistryKey + '\' + Key) then
       begin
@@ -318,20 +482,9 @@ begin
               Continue;
             end;
           end;
-          if L < 4 then
-          begin
-            AddPath(Name, L in [1, 3]);
-            if L = 3 then
-              AddPath(Value, True);
-          end
-          else if SameText(Name, 'PATH') then
-          begin
-            Parts.StrictDelimiter := True;
-            Parts.Delimiter := ';';
-            Parts.DelimitedText := Value;
-            for K := 0 to Parts.Count - 1 do
-              AddPath(Parts[K], False);
-          end;
+          AddPath(Name, L in [1, 3]);
+          if L = 3 then
+            AddPath(Value, True);
         end;
         R.CloseKey;
       end;
@@ -351,9 +504,20 @@ var
   R: TRegistry;
   S: string;
   I, J, K: Integer;
-  Child, Parent: TBackupItem;
+  Child, Parent, It: TBackupItem;
+  Installed: TDelphiVersionList;
 begin
   FLogger.Info('Iniciando descoberta de caminhos.');
+  { protect the install/config folders of EVERY installed version, not only the
+    selected ones, so a component root never swallows another IDE }
+  Installed := TDelphiVersionList.Create(True);
+  try
+    CreateVersionDetector(FLogger).Detect(Installed);
+    FreeAndNil(FSafety);
+    FSafety := TPathSafety.Create(Installed);
+  finally
+    Installed.Free;
+  end;
   try
     for V in AVersions do
     begin
@@ -417,6 +581,22 @@ begin
           end;
         end;
       Dec(I);
+    end;
+    { last line of defense: drop any folder that is a system container, lies in a
+      forbidden area or would include a Delphi install }
+    for I := AItems.Count - 1 downto 0 do
+    begin
+      It := AItems[I];
+      if It.Kind <> ikFolder then
+        Continue;
+      if FSafety.IsContainer(It.SourcePath) or FSafety.IsForbidden(It.SourcePath)
+        or ((It.Category <> icIdeConfig) and
+        FSafety.ContainsProtected(It.SourcePath)) then
+      begin
+        FLogger.Warn('Pasta descartada por segurança (sistema ou instalação da IDE): '
+          + It.SourcePath);
+        AItems.Delete(I);
+      end;
     end;
     FLogger.Info(Format('Descoberta concluída: %d itens.', [AItems.Count]));
   except
