@@ -60,9 +60,20 @@ set "VER=!MAJOR!.!MINOR!.!PATCH!.0"
 if exist "%ROOT%src\DelphiBackupRestore.manifest" >> "%ROOT%src\VersionInfo.rc" echo 1 24 "DelphiBackupRestore.manifest"
 if not exist "%ROOT%.build" mkdir "%ROOT%.build"
 pushd "%ROOT%src"
-brcc32 -foDelphiBackupRestore.res VersionInfo.rc
-if errorlevel 1 (popd & exit /b %errorlevel%)
+if exist "DelphiBackupRestore.res" del "DelphiBackupRestore.res"
+rem cgrc (RAD Studio 2010+) is preferred: brcc32 silently writes an empty .res when the
+rem path contains a folder starting with a dot (e.g. .wc\<task> worktrees)
+where cgrc >nul 2>nul
+if errorlevel 1 (
+  brcc32 -foDelphiBackupRestore.res VersionInfo.rc
+) else (
+  cgrc -c65001 VersionInfo.rc -foDelphiBackupRestore.res
+)
+if errorlevel 1 (popd & exit /b 2)
+for %%F in ("DelphiBackupRestore.res") do set "RES_SIZE=%%~zF"
 popd
+if not defined RES_SIZE (echo Resource file was not created. 1>&2 & exit /b 2)
+if %RES_SIZE% LSS 200 (echo Resource file is empty ^(%RES_SIZE% bytes^): version info/manifest missing. 1>&2 & exit /b 2)
 if not exist "%ROOT%bin" mkdir "%ROOT%bin"
 set "DCC_FLAGS=-B -Q -NSSystem;Winapi;Vcl;Vcl.Imaging;Data -R"%ROOT%src" -E"%ROOT%bin" -N0"%ROOT%.build" -U"%ROOT%src""
 echo Building GUI executable...
