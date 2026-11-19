@@ -35,6 +35,7 @@ type
       before folders holding a Delphi install/config and at VCS roots.
       Returns '' when the folder itself is unsafe. }
     function ComponentRoot(const APath: string): string;
+    function SelectComponentRoots(ACandidates, AResult: TStrings): Integer;
   end;
 
 function IsVcsRoot(const APath: string): Boolean;
@@ -213,12 +214,12 @@ begin
     DirectoryExists(Base + '.svn') or DirectoryExists(Base + '.hg');
 end;
 
-function CommonDocumentsDir: string;
+function SpecialFolderDir(AFolder: Integer): string;
 var
   Buffer: array [0 .. MAX_PATH] of Char;
 begin
   Result := '';
-  if SHGetFolderPath(0, CSIDL_COMMON_DOCUMENTS, 0, 0, Buffer) = S_OK then
+  if SHGetFolderPath(0, AFolder, 0, 0, Buffer) = S_OK then
     Result := Buffer;
 end;
 
@@ -244,7 +245,16 @@ begin
   AddTo(FContainers, GetAppDataDir);
   AddTo(FContainers, GetDocumentsDir);
   AddTo(FContainers, GetPublicDir);
-  AddTo(FContainers, CommonDocumentsDir);
+  AddTo(FContainers, SpecialFolderDir(CSIDL_COMMON_DOCUMENTS));
+  AddTo(FContainers, SpecialFolderDir(CSIDL_DESKTOPDIRECTORY));
+  if Profile <> '' then
+    AddTo(FContainers, IncludeTrailingPathDelimiter(Profile) + 'Downloads');
+  AddTo(FContainers, GetEnvironmentVariable('OneDrive'));
+  AddTo(FContainers, GetEnvironmentVariable('OneDriveCommercial'));
+  AddTo(FContainers, GetEnvironmentVariable('OneDriveConsumer'));
+  AddTo(FContainers, GetEnvironmentVariable('CommonProgramFiles'));
+  AddTo(FContainers, GetEnvironmentVariable('CommonProgramFiles(x86)'));
+  AddTo(FContainers, GetEnvironmentVariable('CommonProgramW6432'));
   AddTo(FContainers, Profile);
   if Profile <> '' then
     AddTo(FContainers, ExtractFileDir(ExcludeTrailingPathDelimiter(Profile)));
@@ -280,8 +290,8 @@ end;
   are resolved against the current folder by Windows, so they are never trusted. }
 function IsAbsolutePath(const APath: string): Boolean;
 begin
-  Result := ((Length(APath) >= 3) and (APath[2] = ':') and
-    CharInSet(APath[3], ['\', '/'])) or (Copy(APath, 1, 2) = '\\');
+  Result := ((Length(APath) >= 3) and (APath[2] = ':') and CharInSet(APath[3],
+    ['\', '/'])) or (Copy(APath, 1, 2) = '\\');
 end;
 
 { "\\server" or "\\server\share" (with or without trailing backslash) }
@@ -381,6 +391,69 @@ begin
   end;
 end;
 
+function TPathSafety.SelectComponentRoots(ACandidates,
+  AResult: TStrings): Integer;
+var
+  Tops, Groups, VcsRoots: TStringList;
+  I, J: Integer;
+  P, Top, Current, Parent, Vcs, Common: string;
+begin
+  Tops := TStringList.Create;
+  Groups := TStringList.Create;
+  VcsRoots := TStringList.Create;
+  try
+    for I := 0 to ACandidates.Count - 1 do
+    begin
+      P := Trim(ACandidates[I]);
+      if not IsAbsolutePath(P) or not DirectoryExists(P) then
+        Continue;
+      P := NormalizePath(P);
+      if (P = '') or IsUnsafeRoot(P) or IsInsideProtected(P) then
+        Continue;
+      Current := P;
+      Vcs := '';
+      while True do
+      begin
+        if IsVcsRoot(Current) then
+          Vcs := Current;
+        Parent := ExtractFileDir(Current);
+        if (Parent = '') or SameText(Parent, Current) or IsUnsafeRoot(Parent) or
+          IsInsideProtected(Parent) then
+          Break;
+        Current := Parent;
+      end;
+      Top := Current;
+      if Vcs <> '' then
+        VcsRoots.Add(Vcs)
+      else
+      begin
+        J := Tops.IndexOf(Top);
+        if J < 0 then
+        begin
+          Tops.Add(Top);
+          Groups.Add(P);
+        end
+        else
+        begin
+          Common := Groups[J];
+          while not IsPathInside(P, Common) do
+            Common := ExtractFileDir(Common);
+          Groups[J] := Common;
+        end;
+      end;
+    end;
+    AResult.Clear;
+    AResult.AddStrings(VcsRoots);
+    AResult.AddStrings(Groups);
+    ReduceToRootFolders(AResult);
+    Result := AResult.Count;
+  finally
+    VcsRoots.Free;
+    Groups.Free;
+    Tops.Free;
+  end;
+end;
+
 { TPathDiscovery }
 
 destructor TPathDiscovery.Destroy;
@@ -395,7 +468,7 @@ var
   R: TRegistry;
   Platforms, Names, Parts: TStringList;
   I, J, K, L: Integer;
-  Key, Platform, Name, Value, P, Root, Company: string;
+  Key, Platform, Name, Value, P, Company: string;
   procedure AddPath(const AText: string; AExpert: Boolean);
   begin
     P := Trim(StringReplace(AText, '"', '', [rfReplaceAll]));
@@ -431,14 +504,14 @@ var
     end;
     if not DirectoryExists(P) or IsPathInside(P, AVersion.RootDir) then
       Exit;
-    Root := FSafety.ComponentRoot(P);
-    if Root = '' then
+    if FSafety.ComponentRoot(P) = '' then
     begin
       FLogger.Debug
         ('Caminho ignorado por segurança (pasta de sistema ou da IDE): ' + P);
       Exit;
     end;
-    AddItem(AItems, ikFolder, icComponents, Root, AVersion.BdsVersion);
+    AddItem(AItems, ikFolder, icComponents, NormalizePath(P),
+      AVersion.BdsVersion);
   end;
 
 begin
@@ -545,6 +618,8 @@ var
   I, J, K: Integer;
   Child, Parent, It: TBackupItem;
   Installed: TDelphiVersionList;
+  Candidates, Roots: TStringList;
+  Components: TBackupItemList;
 begin
   FLogger.Info('Iniciando descoberta de caminhos.');
   { protect the install/config folders of EVERY installed version, not only the
@@ -571,6 +646,40 @@ begin
       AddItem(AItems, ikRegistry, icIdeConfig, 'HKLM\SOFTWARE\' + S,
         V.BdsVersion);
       ReadPaths(V, AItems);
+    end;
+    Candidates := TStringList.Create;
+    Roots := TStringList.Create;
+    Components := TBackupItemList.Create(True);
+    try
+      for I := 0 to AItems.Count - 1 do
+        if (AItems[I].Kind = ikFolder) and (AItems[I].Category = icComponents)
+        then
+          Candidates.Add(AItems[I].SourcePath);
+      FSafety.SelectComponentRoots(Candidates, Roots);
+      for I := 0 to Roots.Count - 1 do
+        for J := 0 to AItems.Count - 1 do
+        begin
+          Child := AItems[J];
+          if (Child.Kind = ikFolder) and (Child.Category = icComponents) and
+            IsPathInside(Child.SourcePath, Roots[I]) then
+            for K := 0 to Child.Versions.Count - 1 do
+              AddItem(Components, ikFolder, icComponents, Roots[I],
+                Child.Versions[K]);
+        end;
+      for I := AItems.Count - 1 downto 0 do
+        if (AItems[I].Kind = ikFolder) and (AItems[I].Category = icComponents)
+        then
+          AItems.Delete(I);
+      for I := 0 to Components.Count - 1 do
+        for J := 0 to Components[I].Versions.Count - 1 do
+          AddItem(AItems, ikFolder, icComponents, Components[I].SourcePath,
+            Components[I].Versions[J]);
+      FLogger.Debug(Format('Raízes de componentes selecionadas: %d.',
+        [Roots.Count]));
+    finally
+      Components.Free;
+      Roots.Free;
+      Candidates.Free;
     end;
     R := TRegistry.Create(KEY_READ);
     try
@@ -612,16 +721,21 @@ begin
     while I >= 0 do
     begin
       Child := AItems[I];
-      if (Child.Kind = ikFolder) and (Child.Category = icComponents) then
+      { a folder inside another folder item (any category) is already copied by
+        the outer one: merge it. A global outer item (no versions, e.g. .boss)
+        stays global; a global inner item makes the outer one global. }
+      if Child.Kind = ikFolder then
         for J := 0 to AItems.Count - 1 do
         begin
           Parent := AItems[J];
           if (I <> J) and (Parent.Kind = ikFolder) and
-            (Parent.Category = icComponents) and IsPathInside(Child.SourcePath,
-            Parent.SourcePath) then
+            IsPathInside(Child.SourcePath, Parent.SourcePath) then
           begin
-            for K := 0 to Child.Versions.Count - 1 do
-              Parent.Versions.Add(Child.Versions[K]);
+            if Child.Versions.Count = 0 then
+              Parent.Versions.Clear
+            else if Parent.Versions.Count > 0 then
+              for K := 0 to Child.Versions.Count - 1 do
+                Parent.Versions.Add(Child.Versions[K]);
             AItems.Delete(I);
             Break;
           end;
