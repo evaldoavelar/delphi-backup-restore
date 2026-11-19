@@ -11,70 +11,79 @@ function ComputeListingHash(AItem: TManifestItem): string;
 function NormalizeRegFile(const AFileName: string): string;
 function BuildEnvironmentManifest(AVersions: TDelphiVersionList;
   AItems: TBackupItemList; const AItemRootResolver: TFunc<TBackupItem, string>;
-  AConfig: TToolConfig; const ALogger: ILogger): TManifest;
+  AConfig: TToolConfig; const ALogger: ILogger; out AFailures: Integer)
+  : TManifest;
 
 implementation
 
 uses System.JSON, System.IOUtils, System.Hash, System.DateUtils, System.Masks,
-  System.Generics.Collections, Core.SystemUtils;
+  System.Generics.Collections, System.Generics.Defaults, Winapi.Windows,
+  Core.SystemUtils;
 
 function Pretty(const S: string): string;
 var
   I, Level: Integer;
   C: Char;
   Quoted, Escaped: Boolean;
+  Builder: TStringBuilder;
   procedure Indent;
   begin
-    Result := Result + sLineBreak + StringOfChar(' ', Level * 2);
+    Builder.Append(sLineBreak);
+    Builder.Append(StringOfChar(' ', Level * 2));
   end;
 
 begin
-  Result := '';
-  Level := 0;
-  Quoted := False;
-  Escaped := False;
-  for I := 1 to Length(S) do
-  begin
-    C := S[I];
-    if Quoted then
+  Builder := TStringBuilder.Create;
+  try
+    Level := 0;
+    Quoted := False;
+    Escaped := False;
+    for I := 1 to Length(S) do
     begin
-      Result := Result + C;
-      if Escaped then
-        Escaped := False
-      else if C = '\' then
-        Escaped := True
-      else if C = '"' then
-        Quoted := False;
-    end
-    else
-      case C of
-        '"':
-          begin
-            Quoted := True;
-            Result := Result + C;
-          end;
-        '{', '[':
-          begin
-            Result := Result + C;
-            Inc(Level);
-            Indent;
-          end;
-        '}', ']':
-          begin
-            Dec(Level);
-            Indent;
-            Result := Result + C;
-          end;
-        ',':
-          begin
-            Result := Result + C;
-            Indent;
-          end;
-        ':':
-          Result := Result + ': ';
+      C := S[I];
+      if Quoted then
+      begin
+        Builder.Append(C);
+        if Escaped then
+          Escaped := False
+        else if C = '\' then
+          Escaped := True
+        else if C = '"' then
+          Quoted := False;
+      end
       else
-        Result := Result + C;
-      end;
+        case C of
+          '"':
+            begin
+              Quoted := True;
+              Builder.Append(C);
+            end;
+          '{', '[':
+            begin
+              Builder.Append(C);
+              Inc(Level);
+              Indent;
+            end;
+          '}', ']':
+            begin
+              Dec(Level);
+              Indent;
+              Builder.Append(C);
+            end;
+          ',':
+            begin
+              Builder.Append(C);
+              Indent;
+            end;
+          ':':
+            Builder.Append(': ');
+        else
+          Builder.Append(C);
+        end;
+    end;
+    Result := Builder.ToString;
+  finally
+    Builder.Free;
   end;
 end;
 
@@ -283,98 +292,150 @@ begin
         Exit(True);
 end;
 
-procedure ScanItemFiles(const ARoot: string; AItem: TManifestItem;
-  AExcludeDirs, AExcludeFiles: TStrings);
+function LongPath(const P: string): string;
+var
+  Full: string;
+begin
+  if Copy(P, 1, 4) = '\\?\' then
+    Exit(P);
+  Full := ExpandFileName(P);
+  if Copy(Full, 1, 2) = '\\' then
+    Result := '\\?\UNC\' + Copy(Full, 3, MaxInt)
+  else
+    Result := '\\?\' + Full;
+end;
+
+procedure ScanFilesInternal(const ARoot: string; AItem: TManifestItem;
+  AExcludeDirs, AExcludeFiles: TStrings; const ALogger: ILogger);
 var
   Base: string;
-  procedure AddFile(const P, Rel: string);
+  Data: TWin32FindData;
+  Handle: THandle;
+  Attr: DWORD;
+  procedure AddFile(const Rel: string; const FD: TWin32FindData);
   var
     F: TManifestFile;
-    St: TFileStream;
+    ST: TSystemTime;
   begin
+    if not FileTimeToSystemTime(FD.ftLastWriteTime, ST) then
+      RaiseLastOSError;
     F := TManifestFile.Create;
     try
       F.RelPath := Rel;
-      St := TFileStream.Create(P, fmOpenRead or fmShareDenyNone);
-      try
-        F.Size := St.Size;
-      finally
-        St.Free;
-      end;
-      F.ModifiedUtc := FormatDateTime('yyyy-mm-dd"T"hh:nn:ss"Z"',
-        TFile.GetLastWriteTimeUtc(P));
+      F.Size := (Int64(FD.nFileSizeHigh) shl 32) or FD.nFileSizeLow;
+      F.ModifiedUtc := Format('%.4d-%.2d-%.2dT%.2d:%.2d:%.2dZ',
+        [ST.wYear, ST.wMonth, ST.wDay, ST.wHour, ST.wMinute, ST.wSecond]);
       AItem.Files.Add(F);
     except
       F.Free;
       raise;
     end;
   end;
-  procedure Walk(const Dir, Rel: string);
+  procedure Walk(const Dir, Rel: string; IsRoot: Boolean);
   var
-    SR: TSearchRec;
-    P, R: string;
+    FD: TWin32FindData;
+    H: THandle;
+    P, R, Name: string;
+    Err: DWORD;
   begin
-    if FindFirst(IncludeTrailingPathDelimiter(Dir) + '*', faAnyFile, SR) = 0
-    then
-      try
-        repeat
-          if (SR.Name = '.') or (SR.Name = '..') then
-            Continue;
-          P := IncludeTrailingPathDelimiter(Dir) + SR.Name;
-          R := Rel + SR.Name;
-          if (SR.Attr and faDirectory) <> 0 then
+    P := IncludeTrailingPathDelimiter(Dir) + '*';
+    H := FindFirstFileW(PChar(P), FD);
+    if H = INVALID_HANDLE_VALUE then
+    begin
+      Err := GetLastError;
+      if IsRoot then
+        raise EDelphiBackupError.CreateFmt('Falha ao listar %s: %s',
+          [Dir, SysErrorMessage(Err)]);
+      if ALogger <> nil then
+        ALogger.Debug('Falha ao listar diretório ' + Dir + ': ' +
+          SysErrorMessage(Err));
+      Exit;
+    end;
+    try
+      repeat
+        Name := FD.cFileName;
+        if (Name <> '.') and (Name <> '..') then
+        begin
+          P := IncludeTrailingPathDelimiter(Dir) + Name;
+          R := Rel + Name;
+          if (FD.dwFileAttributes and FILE_ATTRIBUTE_DIRECTORY) <> 0 then
           begin
-            if ((SR.Attr and faSymLink) = 0) and
-              not Matches(SR.Name, AExcludeDirs) then
-              Walk(P, R + '\');
+            if ((FD.dwFileAttributes and FILE_ATTRIBUTE_REPARSE_POINT) = 0) and
+              not Matches(Name, AExcludeDirs) then
+              Walk(P, R + '\', False);
           end
-          else if not Matches(SR.Name, AExcludeFiles) then
-            AddFile(P, R);
-        until FindNext(SR) <> 0;
-      finally
-        FindClose(SR);
-      end;
+          else if not Matches(Name, AExcludeFiles) then
+            AddFile(R, FD);
+        end;
+        if not FindNextFileW(H, FD) then
+        begin
+          Err := GetLastError;
+          if Err <> ERROR_NO_MORE_FILES then
+            raise EDelphiBackupError.CreateFmt('Falha ao listar %s: %s',
+              [Dir, SysErrorMessage(Err)]);
+          Break;
+        end;
+      until False;
+    finally
+      Winapi.Windows.FindClose(H);
+    end;
   end;
 
-var
-  I, J: Integer;
 begin
   AItem.Files.Clear;
+  Base := LongPath(ARoot);
+  Attr := GetFileAttributesW(PChar(Base));
+  if Attr = INVALID_FILE_ATTRIBUTES then
+    raise EDelphiBackupError.CreateFmt('Falha ao acessar %s: %s',
+      [ARoot, SysErrorMessage(GetLastError)]);
   if AItem.Item.Kind = ikFolder then
   begin
-    if DirectoryExists(ARoot) then
-      Walk(ARoot, '');
+    if (Attr and FILE_ATTRIBUTE_REPARSE_POINT) = 0 then
+      Walk(Base, '', True);
   end
   else if AItem.Item.Kind in [ikFile, ikDll] then
   begin
-    Base := ARoot;
-    if DirectoryExists(Base) then
+    if (Attr and FILE_ATTRIBUTE_DIRECTORY) <> 0 then
       Base := IncludeTrailingPathDelimiter(Base) +
         ExtractFileName(AItem.Item.SourcePath);
-    if FileExists(Base) then
-      AddFile(Base, ExtractFileName(Base));
-  end;
-  for I := 1 to AItem.Files.Count - 1 do
-  begin
-    J := I;
-    while (J > 0) and (CompareStr(AItem.Files[J - 1].RelPath,
-      AItem.Files[J].RelPath) > 0) do
-    begin
-      AItem.Files.Exchange(J - 1, J);
-      Dec(J);
+    Handle := FindFirstFileW(PChar(Base), Data);
+    if Handle = INVALID_HANDLE_VALUE then
+      raise EDelphiBackupError.CreateFmt('Falha ao acessar %s: %s',
+        [Base, SysErrorMessage(GetLastError)]);
+    try
+      if (Data.dwFileAttributes and FILE_ATTRIBUTE_DIRECTORY) = 0 then
+        AddFile(Data.cFileName, Data);
+    finally
+      Winapi.Windows.FindClose(Handle);
     end;
   end;
+  AItem.Files.Sort(TComparer<TManifestFile>.Construct(
+    function(const Left, Right: TManifestFile): Integer
+    begin
+      Result := CompareText(Left.RelPath, Right.RelPath);
+    end));
+end;
+
+procedure ScanItemFiles(const ARoot: string; AItem: TManifestItem;
+AExcludeDirs, AExcludeFiles: TStrings);
+begin
+  ScanFilesInternal(ARoot, AItem, AExcludeDirs, AExcludeFiles, nil);
 end;
 
 function ComputeListingHash(AItem: TManifestItem): string;
 var
   F: TManifestFile;
-  S: string;
+  Builder: TStringBuilder;
 begin
-  S := '';
-  for F in AItem.Files do
-    S := S + F.RelPath + '|' + IntToStr(F.Size) + '|' + F.ModifiedUtc + #10;
-  Result := LowerCase(THashSHA2.GetHashString(S));
+  Builder := TStringBuilder.Create;
+  try
+    for F in AItem.Files do
+      Builder.Append(F.RelPath).Append('|').Append(IntToStr(F.Size)).Append('|')
+        .Append(F.ModifiedUtc).Append(#10);
+    Result := LowerCase(THashSHA2.GetHashString(Builder.ToString));
+  finally
+    Builder.Free;
+  end;
 end;
 
 function Volatile(const S: string): Boolean;
@@ -394,8 +455,9 @@ var
   I: Integer;
   S, Name: string;
   SkipSection, SkipValue, Continued: Boolean;
+  Builder: TStringBuilder;
 begin
-  Result := '';
+  Builder := TStringBuilder.Create;
   L := TStringList.Create;
   try
     L.LoadFromFile(AFileName);
@@ -422,10 +484,12 @@ begin
         SkipValue := Volatile(Name);
       end;
       if not SkipSection and not SkipValue then
-        Result := Result + S + #10;
+        Builder.Append(S).Append(#10);
       Continued := S[Length(S)] = '\';
     end;
+    Result := Builder.ToString;
   finally
+    Builder.Free;
     L.Free;
   end;
 end;
@@ -447,8 +511,9 @@ begin
 end;
 
 function BuildEnvironmentManifest(AVersions: TDelphiVersionList;
-  AItems: TBackupItemList; const AItemRootResolver: TFunc<TBackupItem, string>;
-  AConfig: TToolConfig; const ALogger: ILogger): TManifest;
+AItems: TBackupItemList; const AItemRootResolver: TFunc<TBackupItem, string>;
+AConfig: TToolConfig; const ALogger: ILogger; out AFailures: Integer)
+  : TManifest;
 var
   V: TDelphiVersion;
   MV: TManifestVersion;
@@ -457,6 +522,7 @@ var
   P: string;
   D, F: TStrings;
 begin
+  AFailures := 0;
   ALogger.Info('Montando manifesto do ambiente.');
   Result := TManifest.Create;
   try
@@ -489,16 +555,28 @@ begin
       M := TManifestItem.Create;
       Result.Items.Add(M);
       M.Item := CloneItem(It);
-      P := AItemRootResolver(It);
-      if It.Kind = ikRegistry then
-      begin
-        if FileExists(P) then
+      P := It.SourcePath;
+      try
+        P := AItemRootResolver(It);
+        if It.Kind = ikRegistry then
+        begin
+          if not FileExists(P) then
+            raise EDelphiBackupError.Create
+              ('Arquivo de registro não encontrado: ' + P);
           M.Hash := LowerCase(THashSHA2.GetHashString(NormalizeRegFile(P)));
-      end
-      else
-      begin
-        ScanItemFiles(P, M, D, F);
-        M.Hash := ComputeListingHash(M);
+        end
+        else
+        begin
+          ScanFilesInternal(P, M, D, F, ALogger);
+          M.Hash := ComputeListingHash(M);
+        end;
+      except
+        on E: Exception do
+        begin
+          Inc(AFailures);
+          M.Hash := '';
+          ALogger.Warn('Falha ao montar item ' + P + ': ' + E.Message);
+        end;
       end;
     end;
     ALogger.Info(Format('Manifesto criado com %d itens.',

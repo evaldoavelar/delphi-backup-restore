@@ -151,7 +151,7 @@ var
   It: TBackupItem;
   M: TManifestItem;
   Dirs: TArray<string>;
-  Index: Integer;
+  Index, ManifestFailures: Integer;
 begin
   FLogger.Info('Iniciando comparação.');
   Result := nil;
@@ -225,7 +225,10 @@ begin
           end
           else
             Result := AItem.SourcePath;
-        end, AConfig, FLogger);
+        end, AConfig, FLogger, ManifestFailures);
+      if ManifestFailures > 0 then
+        FLogger.Warn(Format('Manifesto atual contém %d itens com falha.',
+          [ManifestFailures]));
       Result := DiffManifests(B, C, AOptions.Versions);
       FLogger.Info(Format('Comparação concluída: %d diferenças.',
         [Result.Entries.Count]));

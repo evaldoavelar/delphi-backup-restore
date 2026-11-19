@@ -126,7 +126,8 @@ function NormalizeRegFile(const AFileName: string): string; // texto do .reg sem
   // ignorando valores voláteis (Closed Files, Closed Projects, History Lists, Session, Desktop, AutoRecover,
   // Recover Files, MRU*), para hash/compare
 function BuildEnvironmentManifest(AVersions: TDelphiVersionList; AItems: TBackupItemList;
-  const AItemRootResolver: TFunc<TBackupItem, string>; AConfig: TToolConfig; const ALogger: ILogger): TManifest;
+  const AItemRootResolver: TFunc<TBackupItem, string>; AConfig: TToolConfig;
+  const ALogger: ILogger; out AFailures: Integer): TManifest;
   // monta manifest da máquina ATUAL (usado pelo backup e pelo compare); AItemRootResolver devolve a pasta
   // a escanear para cada item (no backup: a cópia; no compare: o caminho original)
 ```
