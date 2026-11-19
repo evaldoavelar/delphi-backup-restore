@@ -1,4 +1,4 @@
-unit Core.Logger;
+﻿unit Core.Logger;
 
 interface
 
@@ -55,7 +55,8 @@ var
   Stream: TFileStream;
   Bytes: TBytes;
 begin
-  if FLogFile = '' then Exit;
+  if FLogFile = '' then
+    Exit;
   Bytes := TEncoding.UTF8.GetBytes(ALine + sLineBreak);
   if FileExists(FLogFile) then
     Stream := TFileStream.Create(FLogFile, fmOpenWrite or fmShareDenyNone)
@@ -67,7 +68,8 @@ begin
     begin
       Bytes := TEncoding.UTF8.GetPreamble + Bytes;
     end;
-    if Length(Bytes) > 0 then Stream.WriteBuffer(Bytes[0], Length(Bytes));
+    if Length(Bytes) > 0 then
+      Stream.WriteBuffer(Bytes[0], Length(Bytes));
   finally
     Stream.Free;
   end;
@@ -93,13 +95,24 @@ begin
 end;
 
 procedure TLogger.Debug(const AMessage: string);
-begin Log(llDebug, AMessage); end;
+begin
+  Log(llDebug, AMessage);
+end;
+
 procedure TLogger.Info(const AMessage: string);
-begin Log(llInfo, AMessage); end;
+begin
+  Log(llInfo, AMessage);
+end;
+
 procedure TLogger.Warn(const AMessage: string);
-begin Log(llWarn, AMessage); end;
+begin
+  Log(llWarn, AMessage);
+end;
+
 procedure TLogger.Error(const AMessage: string);
-begin Log(llError, AMessage); end;
+begin
+  Log(llError, AMessage);
+end;
 
 procedure TLogger.AddSink(const ASink: TLogSink);
 begin
@@ -120,8 +133,10 @@ begin
   finally
     FLock.Release;
   end;
-  if AFileName <> '' then Log(llInfo, 'Arquivo de log configurado: ' + AFileName)
-  else Log(llInfo, 'Gravação em arquivo de log desativada.');
+  if AFileName <> '' then
+    Log(llInfo, 'Arquivo de log configurado: ' + AFileName)
+  else
+    Log(llInfo, 'Gravação em arquivo de log desativada.');
 end;
 
 end.

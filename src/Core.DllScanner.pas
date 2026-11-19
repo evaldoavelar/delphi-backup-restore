@@ -1,4 +1,4 @@
-unit Core.DllScanner;
+﻿unit Core.DllScanner;
 
 interface
 
@@ -37,7 +37,8 @@ type
     function U64(AOffset: Int64): UInt64;
     function MapRva(ARva: Cardinal; ASize: Cardinal): Int64;
     function ImportName(ARva: Cardinal): string;
-    procedure ReadDirectory(ARva, ASize: Cardinal; ADelay: Boolean; AImports: TStrings);
+    procedure ReadDirectory(ARva, ASize: Cardinal; ADelay: Boolean;
+      AImports: TStrings);
   public
     constructor Create(const AFileName: string);
     destructor Destroy; override;
@@ -53,9 +54,11 @@ type
     FSearchDirs: TStringList;
     FVisited: TStringList;
     FResult: TBackupItemList;
-    procedure CollectFiles(const ADirectory: string; ARecursive, ACovered: Boolean);
+    procedure CollectFiles(const ADirectory: string;
+      ARecursive, ACovered: Boolean);
     function IsCovered(const AName: string): Boolean;
-    function ResolveImport(const AName, AParentFile: string; AIs64: Boolean): string;
+    function ResolveImport(const AName, AParentFile: string;
+      AIs64: Boolean): string;
     procedure AddDll(const AFileName: string; AOrigin: TDllOrigin);
     procedure InspectDependencies(const AFileName: string);
     procedure ScanSystemDirectory(const ADirectory: string);
@@ -127,7 +130,8 @@ begin
         Exit;
       end;
     end;
-  raise EReadError.Create('RVA do PE não corresponde a dados presentes no arquivo.');
+  raise EReadError.Create
+    ('RVA do PE não corresponde a dados presentes no arquivo.');
 end;
 
 function TPeReader.ImportName(ARva: Cardinal): string;
@@ -144,16 +148,19 @@ begin
     FStream.ReadBuffer(B, 1);
     if B = 0 then
     begin
-      if Result = '' then raise EReadError.Create('Nome de importação vazio.');
+      if Result = '' then
+        raise EReadError.Create('Nome de importação vazio.');
       Exit;
     end;
-    if (B < 32) or (B = 127) then raise EReadError.Create('Nome de importação inválido.');
+    if (B < 32) or (B = 127) then
+      raise EReadError.Create('Nome de importação inválido.');
     Result := Result + Char(B);
   end;
   raise EReadError.Create('Nome de importação sem terminador.');
 end;
 
-procedure TPeReader.ReadDirectory(ARva, ASize: Cardinal; ADelay: Boolean; AImports: TStrings);
+procedure TPeReader.ReadDirectory(ARva, ASize: Cardinal; ADelay: Boolean;
+  AImports: TStrings);
 var
   Step, Position, NameRva, Attrs: Cardinal;
   Offset: Int64;
@@ -162,9 +169,11 @@ var
   VA: UInt64;
   Name: string;
 begin
-  if ARva = 0 then Exit;
+  if ARva = 0 then
+    Exit;
   Step := 20;
-  if ADelay then Step := 32;
+  if ADelay then
+    Step := 32;
   if (ASize < Step) or (UInt64(ARva) + ASize > UInt64(High(Cardinal)) + 1) then
     raise EReadError.Create('Tamanho inválido do diretório de importações.');
   Position := 0;
@@ -173,8 +182,10 @@ begin
     Offset := MapRva(ARva + Position, Step);
     Zero := True;
     for I := 0 to (Step div 4) - 1 do
-      if U32(Offset + I * 4) <> 0 then Zero := False;
-    if Zero then Exit;
+      if U32(Offset + I * 4) <> 0 then
+        Zero := False;
+    if Zero then
+      Exit;
     if ADelay then
     begin
       Attrs := U32(Offset);
@@ -183,14 +194,18 @@ begin
       begin
         VA := NameRva;
         if (VA < FImageBase) or (VA - FImageBase > High(Cardinal)) then
-          raise EReadError.Create('Endereço virtual inválido no diretório delay-load.');
+          raise EReadError.Create
+            ('Endereço virtual inválido no diretório delay-load.');
         NameRva := Cardinal(VA - FImageBase);
       end;
     end
-    else NameRva := U32(Offset + 12);
-    if NameRva = 0 then raise EReadError.Create('Importação sem nome de DLL.');
+    else
+      NameRva := U32(Offset + 12);
+    if NameRva = 0 then
+      raise EReadError.Create('Importação sem nome de DLL.');
     Name := ImportName(NameRva);
-    if AImports.IndexOf(Name) < 0 then AImports.Add(Name);
+    if AImports.IndexOf(Name) < 0 then
+      AImports.Add(Name);
     Inc(Position, Step);
   end;
   raise EReadError.Create('Diretório de importações sem descritor terminador.');
@@ -203,13 +218,17 @@ var
   NumberDirs, ImportRva, ImportSize, DelayRva, DelaySize: Cardinal;
   I: Integer;
 begin
-  if U16(0) <> $5A4D then raise EReadError.Create('Assinatura DOS inválida.');
+  if U16(0) <> $5A4D then
+    raise EReadError.Create('Assinatura DOS inválida.');
   Nt := U32($3C);
-  if Nt < $40 then raise EReadError.Create('Deslocamento de cabeçalho PE inválido.');
-  if U32(Nt) <> $00004550 then raise EReadError.Create('Assinatura PE inválida.');
+  if Nt < $40 then
+    raise EReadError.Create('Deslocamento de cabeçalho PE inválido.');
+  if U32(Nt) <> $00004550 then
+    raise EReadError.Create('Assinatura PE inválida.');
   Check(Nt, 24);
   Count := U16(Nt + 6);
-  if (Count = 0) or (Count > 4096) then raise EReadError.Create('Número de seções PE inválido.');
+  if (Count = 0) or (Count > 4096) then
+    raise EReadError.Create('Número de seções PE inválido.');
   OptionalSize := U16(Nt + 20);
   Optional := Nt + 24;
   Check(Optional, OptionalSize);
@@ -217,23 +236,27 @@ begin
   FIs64 := Magic = $20B;
   if Magic = $10B then
   begin
-    if OptionalSize < 96 then raise EReadError.Create('Cabeçalho PE32 incompleto.');
+    if OptionalSize < 96 then
+      raise EReadError.Create('Cabeçalho PE32 incompleto.');
     FImageBase := U32(Optional + 28);
     NumberDirs := U32(Optional + 92);
     Dirs := Optional + 96;
   end
   else if Magic = $20B then
   begin
-    if OptionalSize < 112 then raise EReadError.Create('Cabeçalho PE32+ incompleto.');
+    if OptionalSize < 112 then
+      raise EReadError.Create('Cabeçalho PE32+ incompleto.');
     FImageBase := U64(Optional + 24);
     NumberDirs := U32(Optional + 108);
     Dirs := Optional + 112;
   end
-  else raise EReadError.Create('Formato de cabeçalho PE desconhecido.');
+  else
+    raise EReadError.Create('Formato de cabeçalho PE desconhecido.');
   if UInt64(NumberDirs) * 8 > UInt64(Optional + OptionalSize - Dirs) then
     raise EReadError.Create('Diretórios PE excedem o cabeçalho opcional.');
   FHeaderSize := U32(Optional + 60);
-  if FHeaderSize > FStream.Size then raise EReadError.Create('Cabeçalhos PE truncados.');
+  if FHeaderSize > FStream.Size then
+    raise EReadError.Create('Cabeçalhos PE truncados.');
   Sections := Optional + OptionalSize;
   Check(Sections, Int64(Count) * 40);
   SetLength(FSections, Count);
@@ -275,17 +298,20 @@ begin
   Names := TStringList.Create;
   try
     try
-      if AImports = nil then raise EArgumentNilException.Create('AImports');
+      if AImports = nil then
+        raise EArgumentNilException.Create('AImports');
       AImports.Clear;
       Reader := TPeReader.Create(AFileName);
       Reader.ReadImports(Names);
       AIs64 := Reader.FIs64;
       AImports.Assign(Names);
-      ALogger.Debug(Format('Importações PE lidas: %d em %s.', [Names.Count, AFileName]));
+      ALogger.Debug(Format('Importações PE lidas: %d em %s.',
+        [Names.Count, AFileName]));
       Result := True;
     except
       on E: Exception do
-        ALogger.Warn('Não foi possível ler importações PE de ' + AFileName + ': ' + E.Message);
+        ALogger.Warn('Não foi possível ler importações PE de ' + AFileName +
+          ': ' + E.Message);
     end;
   finally
     Reader.Free;
@@ -305,7 +331,8 @@ var
   L: ILogger;
 begin
   L := ALogger;
-  if L = nil then L := CreateLogger;
+  if L = nil then
+    L := CreateLogger;
   L.Debug('Criando scanner de DLLs.');
   Result := TDllScanner.Create(L);
   L.Debug('Scanner de DLLs criado.');
@@ -334,7 +361,8 @@ end;
 
 destructor TDllScanner.Destroy;
 begin
-  if FLogger <> nil then FLogger.Debug('Liberando scanner de DLLs.');
+  if FLogger <> nil then
+    FLogger.Debug('Liberando scanner de DLLs.');
   FVisited.Free;
   FSearchDirs.Free;
   FSystemDirs.Free;
@@ -343,18 +371,22 @@ begin
   inherited;
 end;
 
-procedure TDllScanner.CollectFiles(const ADirectory: string; ARecursive, ACovered: Boolean);
+procedure TDllScanner.CollectFiles(const ADirectory: string;
+  ARecursive, ACovered: Boolean);
 var
   Search: TSearchRec;
   Path, Ext: string;
   Code: Integer;
 begin
-  if not DirectoryExists(ADirectory) then Exit;
-  Code := FindFirst(IncludeTrailingPathDelimiter(ADirectory) + '*', faAnyFile, Search);
+  if not DirectoryExists(ADirectory) then
+    Exit;
+  Code := FindFirst(IncludeTrailingPathDelimiter(ADirectory) + '*',
+    faAnyFile, Search);
   if Code <> 0 then
   begin
     if Code <> ERROR_FILE_NOT_FOUND then
-      FLogger.Warn('Não foi possível listar pasta: ' + ADirectory + ': ' + SysErrorMessage(Code));
+      FLogger.Warn('Não foi possível listar pasta: ' + ADirectory + ': ' +
+        SysErrorMessage(Code));
     Exit;
   end;
   try
@@ -364,7 +396,9 @@ begin
         Path := TPath.Combine(ADirectory, Search.Name);
         if (Search.Attr and faDirectory) <> 0 then
         begin
-          if ARecursive and ((Search.FindData.dwFileAttributes and FILE_ATTRIBUTE_REPARSE_POINT) = 0) then
+          if ARecursive and
+            ((Search.FindData.dwFileAttributes and
+            FILE_ATTRIBUTE_REPARSE_POINT) = 0) then
             CollectFiles(Path, True, ACovered);
         end
         else
@@ -373,14 +407,16 @@ begin
           if SameText(Ext, '.dll') or SameText(Ext, '.bpl') then
           begin
             FFiles.Add(Path);
-            if ACovered then FCoveredNames.Add(Search.Name);
+            if ACovered then
+              FCoveredNames.Add(Search.Name);
           end;
         end;
       end;
       Code := FindNext(Search);
     until Code <> 0;
     if Code <> ERROR_NO_MORE_FILES then
-      FLogger.Warn('Listagem incompleta de ' + ADirectory + ': ' + SysErrorMessage(Code));
+      FLogger.Warn('Listagem incompleta de ' + ADirectory + ': ' +
+        SysErrorMessage(Code));
   finally
     System.SysUtils.FindClose(Search);
   end;
@@ -392,25 +428,32 @@ begin
     (FCoveredNames.IndexOf(AName) >= 0);
 end;
 
-function TDllScanner.ResolveImport(const AName, AParentFile: string; AIs64: Boolean): string;
+function TDllScanner.ResolveImport(const AName, AParentFile: string;
+  AIs64: Boolean): string;
 var
   Dir, Candidate: string;
 begin
   Result := '';
   { A PE name must never turn into an arbitrary absolute or traversal path. }
   if (ExtractFileName(AName) <> AName) or (Pos(':', AName) > 0) or
-    (Pos('/', AName) > 0) or (AName = '.') or (AName = '..') then Exit;
+    (Pos('/', AName) > 0) or (AName = '.') or (AName = '..') then
+    Exit;
   Candidate := TPath.Combine(ExtractFileDir(AParentFile), AName);
-  if FileExists(Candidate) then Exit(Candidate);
+  if FileExists(Candidate) then
+    Exit(Candidate);
   Dir := GetSystem32Dir;
-  if not AIs64 and (GetSysWow64Dir <> '') then Dir := GetSysWow64Dir;
+  if not AIs64 and (GetSysWow64Dir <> '') then
+    Dir := GetSysWow64Dir;
   Candidate := TPath.Combine(Dir, AName);
-  if FileExists(Candidate) then Exit(Candidate);
+  if FileExists(Candidate) then
+    Exit(Candidate);
   for Dir in FSearchDirs do
   begin
-    if FSystemDirs.IndexOf(ExcludeTrailingPathDelimiter(Dir)) >= 0 then Continue;
+    if FSystemDirs.IndexOf(ExcludeTrailingPathDelimiter(Dir)) >= 0 then
+      Continue;
     Candidate := TPath.Combine(Dir, AName);
-    if FileExists(Candidate) then Exit(Candidate);
+    if FileExists(Candidate) then
+      Exit(Candidate);
   end;
 end;
 
@@ -423,14 +466,18 @@ begin
     Item := FResult.FindBySource(ikDll, AFileName);
     if Item <> nil then
     begin
-      if AOrigin = doDependency then Item.DllOrigin := doDependency;
+      if AOrigin = doDependency then
+        Item.DllOrigin := doDependency;
       Exit;
     end;
     Company := Trim(GetFileCompany(AFileName));
     Lower := LowerCase(Company);
     if (Pos('microsoft', Lower) > 0) and
-      (FSystemDirs.IndexOf(ExcludeTrailingPathDelimiter(ExtractFileDir(AFileName))) >= 0) then Exit;
-    if (AOrigin = doSystemScan) and (Company = '') then Exit;
+      (FSystemDirs.IndexOf(ExcludeTrailingPathDelimiter
+      (ExtractFileDir(AFileName))) >= 0) then
+      Exit;
+    if (AOrigin = doSystemScan) and (Company = '') then
+      Exit;
     Item := TBackupItem.Create;
     try
       Item.Id := FResult.NextId(ikDll);
@@ -442,8 +489,8 @@ begin
       Item.Company := Company;
       Item.FileVersion := GetFileVersionText(AFileName);
       Item.DllOrigin := AOrigin;
-      Item.ReinstalledByIde := (Pos('borland', Lower) > 0) or (Pos('codegear', Lower) > 0) or
-        (Pos('embarcadero', Lower) > 0);
+      Item.ReinstalledByIde := (Pos('borland', Lower) > 0) or
+        (Pos('codegear', Lower) > 0) or (Pos('embarcadero', Lower) > 0);
       FResult.Add(Item);
     except
       Item.Free;
@@ -451,7 +498,8 @@ begin
     end;
     FLogger.Info('DLL encontrada: ' + AFileName + ' (' + Company + ').');
   except
-    on E: Exception do FLogger.Warn('Falha ao examinar DLL ' + AFileName + ': ' + E.Message);
+    on E: Exception do
+      FLogger.Warn('Falha ao examinar DLL ' + AFileName + ': ' + E.Message);
   end;
 end;
 
@@ -461,26 +509,33 @@ var
   Name, Resolved, Company: string;
   Is64: Boolean;
 begin
-  if FVisited.IndexOf(AFileName) >= 0 then Exit;
+  if FVisited.IndexOf(AFileName) >= 0 then
+    Exit;
   FVisited.Add(AFileName);
   Imports := TStringList.Create;
   try
-    if not ReadPeImportsLogged(AFileName, Imports, FLogger, Is64) then Exit;
+    if not ReadPeImportsLogged(AFileName, Imports, FLogger, Is64) then
+      Exit;
     for Name in Imports do
     begin
-      if IsCovered(Name) then Continue;
+      if IsCovered(Name) then
+        Continue;
       Resolved := ResolveImport(Name, AFileName, Is64);
       if Resolved = '' then
       begin
-        FLogger.Warn('Dependência não localizada: ' + Name + ' (importada por ' + AFileName + ').');
+        FLogger.Warn('Dependência não localizada: ' + Name + ' (importada por '
+          + AFileName + ').');
         Continue;
       end;
       Company := GetFileCompany(Resolved);
       if System.StrUtils.ContainsText(Company, 'Microsoft') and
-        (FSystemDirs.IndexOf(ExcludeTrailingPathDelimiter(ExtractFileDir(Resolved))) >= 0) then Continue;
+        (FSystemDirs.IndexOf(ExcludeTrailingPathDelimiter
+        (ExtractFileDir(Resolved))) >= 0) then
+        Continue;
       AddDll(Resolved, doDependency);
       { Queue instead of recursively following untrusted chains of imports. }
-      if FFiles.IndexOf(Resolved) < 0 then FFiles.Add(Resolved);
+      if FFiles.IndexOf(Resolved) < 0 then
+        FFiles.Add(Resolved);
     end;
   finally
     Imports.Free;
@@ -493,12 +548,15 @@ var
   Code: Integer;
   Ext: string;
 begin
-  if not DirectoryExists(ADirectory) then Exit;
+  if not DirectoryExists(ADirectory) then
+    Exit;
   FLogger.Info('Procurando DLLs de terceiros em ' + ADirectory);
-  Code := FindFirst(IncludeTrailingPathDelimiter(ADirectory) + '*', faAnyFile, Search);
+  Code := FindFirst(IncludeTrailingPathDelimiter(ADirectory) + '*',
+    faAnyFile, Search);
   if Code <> 0 then
   begin
-    FLogger.Warn('Não foi possível listar pasta de sistema: ' + ADirectory + ': ' + SysErrorMessage(Code));
+    FLogger.Warn('Não foi possível listar pasta de sistema: ' + ADirectory +
+      ': ' + SysErrorMessage(Code));
     Exit;
   end;
   try
@@ -512,14 +570,15 @@ begin
       Code := FindNext(Search);
     until Code <> 0;
     if Code <> ERROR_NO_MORE_FILES then
-      FLogger.Warn('Listagem incompleta de ' + ADirectory + ': ' + SysErrorMessage(Code));
+      FLogger.Warn('Listagem incompleta de ' + ADirectory + ': ' +
+        SysErrorMessage(Code));
   finally
     System.SysUtils.FindClose(Search);
   end;
 end;
 
-procedure TDllScanner.Scan(AVersions: TDelphiVersionList; ACovered: TBackupItemList;
-  AResult: TBackupItemList);
+procedure TDllScanner.Scan(AVersions: TDelphiVersionList;
+  ACovered: TBackupItemList; AResult: TBackupItemList);
 var
   Item: TBackupItem;
   V: TDelphiVersion;
@@ -535,7 +594,8 @@ begin
   OldRedirection := nil;
   try
     try
-      if AResult = nil then raise EArgumentNilException.Create('AResult');
+      if AResult = nil then
+        raise EArgumentNilException.Create('AResult');
       FResult := AResult;
       FCoveredNames.Clear;
       FFiles.Clear;
@@ -547,13 +607,17 @@ begin
       if IsWow then
       begin
         RedirectDisabled := DisableWow64Redirection(OldRedirection);
-        if not RedirectDisabled then RaiseLastOSError;
+        if not RedirectDisabled then
+          RaiseLastOSError;
       end;
       Dir := GetSystem32Dir;
-      if Dir <> '' then FSystemDirs.Add(Dir);
+      if Dir <> '' then
+        FSystemDirs.Add(Dir);
       Dir := GetSysWow64Dir;
-      if Dir <> '' then FSystemDirs.Add(Dir);
-      for Dir in FSystemDirs do FSearchDirs.Add(Dir);
+      if Dir <> '' then
+        FSystemDirs.Add(Dir);
+      for Dir in FSystemDirs do
+        FSearchDirs.Add(Dir);
       Paths := TStringList.Create;
       try
         Paths.StrictDelimiter := True;
@@ -562,8 +626,10 @@ begin
         Paths.DelimitedText := GetEnvironmentVariable('PATH');
         for PathEntry in Paths do
         begin
-          Dir := ExpandEnvVars(StringReplace(Trim(PathEntry), '"', '', [rfReplaceAll]));
-          if (Dir <> '') and DirectoryExists(Dir) then FSearchDirs.Add(Dir);
+          Dir := ExpandEnvVars(StringReplace(Trim(PathEntry), '"', '',
+            [rfReplaceAll]));
+          if (Dir <> '') and DirectoryExists(Dir) then
+            FSearchDirs.Add(Dir);
         end;
       finally
         Paths.Free;
@@ -572,7 +638,8 @@ begin
         for Item in ACovered do
           try
             case Item.Kind of
-              ikFolder: CollectFiles(Item.SourcePath, True, True);
+              ikFolder:
+                CollectFiles(Item.SourcePath, True, True);
               ikFile:
                 if FileExists(Item.SourcePath) then
                 begin
@@ -582,7 +649,9 @@ begin
                 end;
             end;
           except
-            on E: Exception do FLogger.Warn('Falha ao examinar item ' + Item.SourcePath + ': ' + E.Message);
+            on E: Exception do
+              FLogger.Warn('Falha ao examinar item ' + Item.SourcePath + ': ' +
+                E.Message);
           end;
       if AVersions <> nil then
         for V in AVersions do
@@ -593,7 +662,8 @@ begin
           FSearchDirs.Add(TPath.Combine(V.RootDir, 'bin64'));
         end;
       { Dependency inspection upgrades matching system-scan items to doDependency. }
-      for Dir in FSystemDirs do ScanSystemDirectory(Dir);
+      for Dir in FSystemDirs do
+        ScanSystemDirectory(Dir);
       I := 0;
       while I < FFiles.Count do
       begin
@@ -601,13 +671,18 @@ begin
         try
           InspectDependencies(FileName);
         except
-          on E: Exception do FLogger.Warn('Falha ao analisar dependências de ' + FileName + ': ' + E.Message);
+          on E: Exception do
+            FLogger.Warn('Falha ao analisar dependências de ' + FileName + ': '
+              + E.Message);
         end;
         Inc(I);
       end;
-      FLogger.Info(Format('Varredura concluída: %d DLLs disponíveis para seleção.', [AResult.Count]));
+      FLogger.Info
+        (Format('Varredura concluída: %d DLLs disponíveis para seleção.',
+        [AResult.Count]));
     except
-      on E: Exception do FLogger.Error('Falha na varredura de DLLs: ' + E.Message);
+      on E: Exception do
+        FLogger.Error('Falha na varredura de DLLs: ' + E.Message);
     end;
   finally
     if RedirectDisabled and not RevertWow64Redirection(OldRedirection) then

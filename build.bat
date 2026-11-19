@@ -2,7 +2,22 @@
 setlocal EnableExtensions EnableDelayedExpansion
 set "ROOT=%~dp0"
 set "BDS_VERSION="
-if /I "%~1"=="--bds" set "BDS_VERSION=%~2"
+set "RUN_TESTS="
+:parse_args
+if "%~1"=="" goto args_done
+if /I "%~1"=="--bds" (set "BDS_VERSION=%~2" & shift & shift & goto parse_args)
+if /I "%~1"=="--tests" (set "RUN_TESTS=1" & shift & goto parse_args)
+if /I "%~1"=="--help" goto usage
+echo Unknown argument: %~1 1>&2
+goto usage_error
+:usage
+echo Usage: build.bat [--bds ^<version^>] [--tests]
+echo   --bds    BDS version to use (e.g. 22.0). Default: newest installed with rsvars.bat
+echo   --tests  also build and run tests\DelphiBackupRestoreTests.dpr
+exit /b 0
+:usage_error
+exit /b 4
+:args_done
 set "RSVARS="
 if not "%BDS_VERSION%"=="" (
   for /f "usebackq delims=" %%R in (`powershell -NoProfile -Command "$v='%BDS_VERSION%'; foreach($h in @('HKLM:\SOFTWARE\WOW6432Node\Embarcadero\BDS\'+$v,'HKLM:\SOFTWARE\Embarcadero\BDS\'+$v)){if(Test-Path $h){$r=(Get-ItemProperty $h).RootDir;if($r){$f=Join-Path $r 'bin\rsvars.bat';if(Test-Path $f){$f;break}}}}"`) do set "RSVARS=%%R"
@@ -48,18 +63,19 @@ pushd "%ROOT%src"
 brcc32 -foDelphiBackupRestore.res VersionInfo.rc
 if errorlevel 1 (popd & exit /b %errorlevel%)
 popd
-if not exist "%ROOT%src\DelphiBackupRestore.dpr" (
-  echo rsvars.bat found and brcc32 compiled src\VersionInfo.rc.
-  echo Waiting for src\DelphiBackupRestore.dpr before compiling the application.
-  exit /b 0
-)
 if not exist "%ROOT%bin" mkdir "%ROOT%bin"
-dcc32 -B -Q -NSSystem;Winapi;Vcl;Vcl.Imaging -R"%ROOT%src" -E"%ROOT%bin" -N0"%ROOT%.build" "%ROOT%src\DelphiBackupRestore.dpr"
-if errorlevel 1 exit /b %errorlevel%
-if /I "%~1"=="--tests" (
-  dcc32 -B -Q -NSSystem;Winapi;Vcl;Vcl.Imaging -R"%ROOT%src" -E"%ROOT%bin" -N0"%ROOT%.build" "%ROOT%tests\DelphiBackupRestoreTests.dpr"
-  if errorlevel 1 exit /b %errorlevel%
-  "%ROOT%bin\DelphiBackupRestoreTests.exe"
-  exit /b %errorlevel%
-)
-exit /b 0
+set "DCC_FLAGS=-B -Q -NSSystem;Winapi;Vcl;Vcl.Imaging;Data -R"%ROOT%src" -E"%ROOT%bin" -N0"%ROOT%.build" -U"%ROOT%src""
+echo Building GUI executable...
+dcc32 %DCC_FLAGS% "%ROOT%src\DelphiBackupRestore.dpr"
+if errorlevel 1 exit /b 2
+echo Building console executable...
+dcc32 %DCC_FLAGS% "%ROOT%src\DelphiBackupRestoreCli.dpr"
+if errorlevel 1 exit /b 2
+if not defined RUN_TESTS exit /b 0
+if not exist "%ROOT%tests\DelphiBackupRestoreTests.dpr" (echo tests\DelphiBackupRestoreTests.dpr not found 1>&2 & exit /b 2)
+echo Building tests...
+dcc32 %DCC_FLAGS% -U"%ROOT%tests" "%ROOT%tests\DelphiBackupRestoreTests.dpr"
+if errorlevel 1 exit /b 2
+echo Running tests...
+"%ROOT%bin\DelphiBackupRestoreTests.exe" --exitbehavior:Continue
+exit /b %errorlevel%

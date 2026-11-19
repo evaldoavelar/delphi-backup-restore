@@ -10,8 +10,10 @@
 interface
 
 uses
-  Winapi.Windows, Winapi.Messages, System.SysUtils, System.Classes, System.Generics.Collections,
-  Vcl.Controls, Vcl.Forms, Vcl.StdCtrls, Vcl.ExtCtrls, Vcl.ComCtrls, Vcl.CheckLst, Vcl.Dialogs,
+  Winapi.Windows, Winapi.Messages, System.SysUtils, System.Classes,
+  System.Generics.Collections,
+  Vcl.Controls, Vcl.Forms, Vcl.StdCtrls, Vcl.ExtCtrls, Vcl.ComCtrls,
+  Vcl.CheckLst, Vcl.Dialogs,
   Vcl.Graphics, Core.Types, Core.RestoreEngine;
 
 type
@@ -38,7 +40,7 @@ type
     FInstalled: TDelphiVersionList;
     FItems: TBackupItemList;
     FItemsKey: string;
-    FSelected: TDelphiVersionList;   // non-owning, backup only
+    FSelected: TDelphiVersionList; // non-owning, backup only
     FSelBds: TArray<string>;
     FRestore: TRestoreEngine;
     FRestoreSource: string;
@@ -58,7 +60,7 @@ type
     FBtnBack: TButton;
     FBtnNext: TButton;
     FBtnClose: TButton;
-    FPanels: array[TWizPage] of TPanel;
+    FPanels: array [TWizPage] of TPanel;
 
     FRgMode: TRadioGroup;
     FLblVersions: TLabel;
@@ -78,9 +80,10 @@ type
     procedure BuildUI;
     function NewPanel: TPanel;
     function NewLabel(AParent: TWinControl; const ACaption: string): TLabel;
-    function NewButton(AParent: TWinControl; const ACaption: string; AWidth: Integer;
-      AClick: TNotifyEvent): TButton;
-    function NewToolbar(AParent: TWinControl; AMarkAll, AMarkNone: TNotifyEvent): TPanel;
+    function NewButton(AParent: TWinControl; const ACaption: string;
+      AWidth: Integer; AClick: TNotifyEvent): TButton;
+    function NewToolbar(AParent: TWinControl;
+      AMarkAll, AMarkNone: TNotifyEvent): TPanel;
     procedure BuildModePage;
     procedure BuildVersionsPage;
     procedure BuildItemsPage;
@@ -113,7 +116,8 @@ type
     procedure StartBackup;
     procedure StartRestore;
     procedure StartCompare;
-    procedure RunDone(const AError: string; APrecheck: Boolean; const ASuccessText: string);
+    procedure RunDone(const AError: string; APrecheck: Boolean;
+      const ASuccessText: string);
     procedure OnProgress(ACurrent, ATotal: Integer; const AStep: string);
 
     procedure BackClick(Sender: TObject);
@@ -141,22 +145,15 @@ uses
   Core.DllScanner;
 
 const
-  CategoryLabels: array[TItemCategory] of string = (
-    'Componentes de terceiros',
-    'Configuração da IDE (registro e pastas)',
-    'Experts e plugins',
-    'Boss (pacotes)',
-    'Extras (arquivo de configuração)',
+  CategoryLabels: array [TItemCategory] of string = ('Componentes de terceiros',
+    'Configuração da IDE (registro e pastas)', 'Experts e plugins',
+    'Boss (pacotes)', 'Extras (arquivo de configuração)',
     'DLLs de terceiros do sistema');
 
-  PageTitles: array[TWizPage] of string = (
-    'O que você deseja fazer?',
-    'Versões do Delphi',
-    'Itens',
-    'Caminho',
-    'Execução');
+  PageTitles: array [TWizPage] of string = ('O que você deseja fazer?',
+    'Versões do Delphi', 'Itens', 'Caminho', 'Execução');
 
-{ TWizardWorker }
+  { TWizardWorker }
 
 constructor TWizardWorker.Create(const AWork: TProc; const ADone: TWorkDone);
 begin
@@ -186,8 +183,7 @@ begin
       Err := E.ClassName + ': ' + E.Message;
   end;
   Done := FDone;
-  TThread.Queue(nil,
-    procedure
+  TThread.Queue(nil, procedure
     begin
       Done(Err, Pre);
     end);
@@ -210,8 +206,7 @@ begin
   FMode := wmBackup;
   FPage := wpMode;
 
-  FLogger.AddSink(
-    procedure(ALevel: TLogLevel; const AMessage: string)
+  FLogger.AddSink(procedure(ALevel: TLogLevel; const AMessage: string)
     var
       Prefix: string;
     begin
@@ -267,7 +262,8 @@ begin
   Result.Visible := False;
 end;
 
-function TMainWizard.NewLabel(AParent: TWinControl; const ACaption: string): TLabel;
+function TMainWizard.NewLabel(AParent: TWinControl;
+const ACaption: string): TLabel;
 begin
   Result := TLabel.Create(Self);
   Result.Parent := AParent;
@@ -278,8 +274,8 @@ begin
   Result.Caption := ACaption;
 end;
 
-function TMainWizard.NewButton(AParent: TWinControl; const ACaption: string; AWidth: Integer;
-  AClick: TNotifyEvent): TButton;
+function TMainWizard.NewButton(AParent: TWinControl; const ACaption: string;
+AWidth: Integer; AClick: TNotifyEvent): TButton;
 begin
   Result := TButton.Create(Self);
   Result.Parent := AParent;
@@ -289,7 +285,8 @@ begin
   Result.OnClick := AClick;
 end;
 
-function TMainWizard.NewToolbar(AParent: TWinControl; AMarkAll, AMarkNone: TNotifyEvent): TPanel;
+function TMainWizard.NewToolbar(AParent: TWinControl;
+AMarkAll, AMarkNone: TNotifyEvent): TPanel;
 var
   B: TButton;
 begin
@@ -374,8 +371,8 @@ begin
   FRgMode.ItemIndex := 0;
   FRgMode.OnClick := ModeClick;
   NewLabel(FPanels[wpMode],
-    'Dica: instale as versões do Delphi (da mais antiga para a mais nova) antes de restaurar. ' +
-    'A restauração sobrescreve componentes, configurações da IDE e chaves de registro.');
+    'Dica: instale as versões do Delphi (da mais antiga para a mais nova) antes de restaurar. '
+    + 'A restauração sobrescreve componentes, configurações da IDE e chaves de registro.');
 end;
 
 procedure TMainWizard.BuildVersionsPage;
@@ -393,7 +390,8 @@ begin
   FChkDlls := TCheckBox.Create(Self);
   FChkDlls.Parent := FPanels[wpItems];
   FChkDlls.Align := alBottom;
-  FChkDlls.Caption := 'Procurar DLLs de terceiros (System32/SysWOW64 e dependências) — pode demorar';
+  FChkDlls.Caption :=
+    'Procurar DLLs de terceiros (System32/SysWOW64 e dependências) — pode demorar';
   FChkDlls.Checked := False;
   FChkDlls.OnClick := DllsClick;
   NewToolbar(FPanels[wpItems], MarkAllItems, MarkNoItems);
@@ -412,7 +410,8 @@ begin
   FBtnBrowse := NewButton(FPanels[wpPath], 'Pasta...', 90, BrowseFolderClick);
   FBtnBrowse.SetBounds(656, 28, 90, 28);
   FBtnBrowse.Anchors := [akTop, akRight];
-  FBtnBrowseZip := NewButton(FPanels[wpPath], 'Arquivo .zip...', 100, BrowseZipClick);
+  FBtnBrowseZip := NewButton(FPanels[wpPath], 'Arquivo .zip...', 100,
+    BrowseZipClick);
   FBtnBrowseZip.SetBounds(656, 62, 90, 28);
   FBtnBrowseZip.Anchors := [akTop, akRight];
   FChkZip := TCheckBox.Create(Self);
@@ -445,13 +444,25 @@ begin
   Result := wpRun;
   case APage of
     wpMode:
-      if FMode = wmBackup then Result := wpVersions else Result := wpPath;
+      if FMode = wmBackup then
+        Result := wpVersions
+      else
+        Result := wpPath;
     wpVersions:
-      if FMode = wmCompare then Result := wpRun else Result := wpItems;
+      if FMode = wmCompare then
+        Result := wpRun
+      else
+        Result := wpItems;
     wpItems:
-      if FMode = wmBackup then Result := wpPath else Result := wpRun;
+      if FMode = wmBackup then
+        Result := wpPath
+      else
+        Result := wpRun;
     wpPath:
-      if FMode = wmBackup then Result := wpRun else Result := wpVersions;
+      if FMode = wmBackup then
+        Result := wpRun
+      else
+        Result := wpVersions;
   end;
 end;
 
@@ -460,16 +471,25 @@ begin
   Result := wpMode;
   case APage of
     wpVersions:
-      if FMode = wmBackup then Result := wpMode else Result := wpPath;
+      if FMode = wmBackup then
+        Result := wpMode
+      else
+        Result := wpPath;
     wpItems:
       Result := wpVersions;
     wpPath:
-      if FMode = wmBackup then Result := wpItems else Result := wpMode;
+      if FMode = wmBackup then
+        Result := wpItems
+      else
+        Result := wpMode;
     wpRun:
       case FMode of
-        wmBackup: Result := wpPath;
-        wmRestore: Result := wpItems;
-        wmCompare: Result := wpVersions;
+        wmBackup:
+          Result := wpPath;
+        wmRestore:
+          Result := wpItems;
+        wmCompare:
+          Result := wpVersions;
       end;
   end;
 end;
@@ -489,13 +509,16 @@ begin
       begin
         if FMode = wmBackup then
         begin
-          FSubtitle.Caption := 'Selecione as versões instaladas que entram no backup.';
+          FSubtitle.Caption :=
+            'Selecione as versões instaladas que entram no backup.';
           FLblVersions.Caption := 'Versões do Delphi instaladas nesta máquina:';
         end
         else
         begin
-          FSubtitle.Caption := 'Selecione as versões do backup que serão usadas.';
-          FLblVersions.Caption := 'Versões presentes no backup (versões não instaladas só podem ser comparadas):';
+          FSubtitle.Caption :=
+            'Selecione as versões do backup que serão usadas.';
+          FLblVersions.Caption :=
+            'Versões presentes no backup (versões não instaladas só podem ser comparadas):';
         end;
         FillVersions;
       end;
@@ -510,7 +533,8 @@ begin
         end
         else
         begin
-          FSubtitle.Caption := 'Escolha as categorias a restaurar. Tudo que existir nelas será sobrescrito.';
+          FSubtitle.Caption :=
+            'Escolha as categorias a restaurar. Tudo que existir nelas será sobrescrito.';
           FLblItems.Caption := 'Categorias do backup:';
           FChkDlls.Visible := False;
           FillCategories;
@@ -562,8 +586,7 @@ var
   Msg: string;
 begin
   Msg := AText;
-  TThread.Queue(nil,
-    procedure
+  TThread.Queue(nil, procedure
     begin
       if not FClosing then
         FMemo.Lines.Add(Msg);
@@ -606,7 +629,8 @@ begin
         FMode := TWizMode(FRgMode.ItemIndex);
         if (FMode = wmBackup) and (FInstalled.Count = 0) then
         begin
-          MessageDlg('Nenhuma versão do Delphi foi encontrada nesta máquina.', mtError, [mbOK], 0);
+          MessageDlg('Nenhuma versão do Delphi foi encontrada nesta máquina.',
+            mtError, [mbOK], 0);
           Exit;
         end;
         ResetSession;
@@ -636,7 +660,8 @@ begin
         SyncSelection;
         if CheckedCount(FLstItems) = 0 then
         begin
-          MessageDlg('Selecione ao menos um item para o backup.', mtWarning, [mbOK], 0);
+          MessageDlg('Selecione ao menos um item para o backup.', mtWarning,
+            [mbOK], 0);
           Exit;
         end;
       end
@@ -687,7 +712,8 @@ procedure TMainWizard.WizardCloseQuery(Sender: TObject; var CanClose: Boolean);
 begin
   CanClose := not FBusy;
   if not CanClose then
-    MessageDlg('Aguarde o término da operação em andamento.', mtInformation, [mbOK], 0);
+    MessageDlg('Aguarde o término da operação em andamento.', mtInformation,
+      [mbOK], 0);
 end;
 
 procedure TMainWizard.ModeClick(Sender: TObject);
@@ -744,7 +770,7 @@ procedure TMainWizard.FillCategories;
 var
   C: TItemCategory;
   MI: TManifestItem;
-  Counts: array[TItemCategory] of Integer;
+  Counts: array [TItemCategory] of Integer;
   Idx, I: Integer;
   Used: Boolean;
 begin
@@ -766,8 +792,8 @@ begin
     for C := Low(TItemCategory) to High(TItemCategory) do
       if Counts[C] > 0 then
       begin
-        Idx := FLstItems.Items.AddObject(
-          Format('%s (%d itens)', [CategoryLabels[C], Counts[C]]), TObject(NativeInt(Ord(C))));
+        Idx := FLstItems.Items.AddObject(Format('%s (%d itens)',
+          [CategoryLabels[C], Counts[C]]), TObject(NativeInt(Ord(C))));
         FLstItems.Checked[Idx] := True;
       end;
   finally
@@ -877,8 +903,7 @@ begin
   FSelected.Clear;
   FLblItems.Caption := 'Procurando itens do ambiente, aguarde...';
   SetBusy(True);
-  TWizardWorker.Create(
-    procedure
+  TWizardWorker.Create(procedure
     var
       V: TDelphiVersion;
       S: string;
@@ -890,8 +915,7 @@ begin
           Versions.Add(V);
       end;
       CreatePathDiscovery(FLogger).Discover(Versions, FConfig, NewItems);
-    end,
-    procedure(const AError: string; APrecheck: Boolean)
+    end, procedure(const AError: string; APrecheck: Boolean)
     var
       S: string;
       V: TDelphiVersion;
@@ -915,7 +939,8 @@ begin
       if AError <> '' then
       begin
         FItemsKey := '';
-        MessageDlg('Falha ao descobrir os itens: ' + AError, mtError, [mbOK], 0);
+        MessageDlg('Falha ao descobrir os itens: ' + AError, mtError,
+          [mbOK], 0);
       end;
       RebuildItemList;
     end);
@@ -929,12 +954,10 @@ begin
   FLblItems.Caption := 'Procurando DLLs de terceiros, aguarde...';
   SyncSelection;
   SetBusy(True);
-  TWizardWorker.Create(
-    procedure
+  TWizardWorker.Create(procedure
     begin
       CreateDllScanner(FLogger).Scan(FSelected, FItems, Dlls);
-    end,
-    procedure(const AError: string; APrecheck: Boolean)
+    end, procedure(const AError: string; APrecheck: Boolean)
     var
       I: Integer;
       It: TBackupItem;
@@ -1022,7 +1045,8 @@ begin
   if FMode = wmBackup then
   begin
     FSubtitle.Caption := 'Escolha onde o backup será gravado.';
-    FLblPath.Caption := 'Pasta de destino (será criada a subpasta DelphiEnv_<máquina>_<data>):';
+    FLblPath.Caption :=
+      'Pasta de destino (será criada a subpasta DelphiEnv_<máquina>_<data>):';
     if FDestText = '' then
       FDestText := GetDocumentsDir + '\DelphiBackups';
     FEdtPath.Text := FDestText;
@@ -1033,7 +1057,8 @@ begin
   else
   begin
     FSubtitle.Caption := 'Escolha o backup (pasta ou arquivo .zip).';
-    FLblPath.Caption := 'Backup a usar (pasta com manifest.json ou arquivo .zip):';
+    FLblPath.Caption :=
+      'Backup a usar (pasta com manifest.json ou arquivo .zip):';
     FEdtPath.Text := FSourceText;
     FBtnBrowse.Caption := 'Pasta...';
     FBtnBrowseZip.Caption := 'Arquivo .zip...';
@@ -1086,9 +1111,11 @@ var
   Engine: TRestoreEngine;
 begin
   Result := False;
-  if (FSourceText = '') or not (FileExists(FSourceText) or DirectoryExists(FSourceText)) then
+  if (FSourceText = '') or not(FileExists(FSourceText) or
+    DirectoryExists(FSourceText)) then
   begin
-    MessageDlg('Informe uma pasta de backup ou arquivo .zip existente.', mtWarning, [mbOK], 0);
+    MessageDlg('Informe uma pasta de backup ou arquivo .zip existente.',
+      mtWarning, [mbOK], 0);
     Exit;
   end;
   if (FRestore <> nil) and SameText(FRestoreSource, FSourceText) then
@@ -1104,7 +1131,8 @@ begin
       begin
         Engine.Free;
         Screen.Cursor := crDefault;
-        MessageDlg('Não foi possível abrir o backup: ' + E.Message, mtError, [mbOK], 0);
+        MessageDlg('Não foi possível abrir o backup: ' + E.Message, mtError,
+          [mbOK], 0);
         Exit;
       end;
     end;
@@ -1118,11 +1146,11 @@ end;
 
 { --------------------------------------------------------------- Execution }
 
-procedure TMainWizard.OnProgress(ACurrent, ATotal: Integer; const AStep: string);
+procedure TMainWizard.OnProgress(ACurrent, ATotal: Integer;
+const AStep: string);
 begin
   { called from the worker thread }
-  TThread.Queue(nil,
-    procedure
+  TThread.Queue(nil, procedure
     begin
       if FClosing then
         Exit;
@@ -1136,7 +1164,8 @@ begin
     end);
 end;
 
-procedure TMainWizard.RunDone(const AError: string; APrecheck: Boolean; const ASuccessText: string);
+procedure TMainWizard.RunDone(const AError: string; APrecheck: Boolean;
+const ASuccessText: string);
 begin
   SetBusy(False);
   if FClosing then
@@ -1171,9 +1200,12 @@ begin
   FProgress.Position := 0;
   FLblStatus.Caption := '';
   case FMode of
-    wmBackup: StartBackup;
-    wmRestore: StartRestore;
-    wmCompare: StartCompare;
+    wmBackup:
+      StartBackup;
+    wmRestore:
+      StartRestore;
+    wmCompare:
+      StartCompare;
   end;
 end;
 
@@ -1193,19 +1225,18 @@ begin
     Include(Options.Categories, icSystemDll);
   OutPath := '';
   SetBusy(True);
-  TWizardWorker.Create(
-    procedure
+  TWizardWorker.Create(procedure
     var
       Engine: TBackupEngine;
     begin
       Engine := TBackupEngine.Create(FLogger, FRunner);
       try
-        OutPath := Engine.Execute(Options, FSelected, FItems, FConfig, OnProgress);
+        OutPath := Engine.Execute(Options, FSelected, FItems, FConfig,
+          OnProgress);
       finally
         Engine.Free;
       end;
-    end,
-    procedure(const AError: string; APrecheck: Boolean)
+    end, procedure(const AError: string; APrecheck: Boolean)
     begin
       FSubtitle.Caption := '';
       RunDone(AError, APrecheck, 'Backup concluído: ' + OutPath);
@@ -1236,7 +1267,8 @@ begin
     on E: Exception do
     begin
       FMemo.Lines.Add('FALHA: ' + E.Message);
-      MessageDlg('Falha na verificação prévia: ' + E.Message, mtError, [mbOK], 0);
+      MessageDlg('Falha na verificação prévia: ' + E.Message, mtError,
+        [mbOK], 0);
       Exit;
     end;
   end;
@@ -1254,9 +1286,11 @@ begin
     Plan.Free;
   end;
   FMemo.Lines.Add('');
-  if MessageDlg('A restauração vai SOBRESCREVER componentes, configurações e chaves de registro ' +
-    'das versões selecionadas nesta máquina. Esta ação não pode ser desfeita automaticamente.' +
-    sLineBreak + sLineBreak + 'Deseja continuar?', mtConfirmation, [mbYes, mbNo], 0) <> mrYes then
+  if MessageDlg
+    ('A restauração vai SOBRESCREVER componentes, configurações e chaves de registro '
+    + 'das versões selecionadas nesta máquina. Esta ação não pode ser desfeita automaticamente.'
+    + sLineBreak + sLineBreak + 'Deseja continuar?', mtConfirmation,
+    [mbYes, mbNo], 0) <> mrYes then
   begin
     FMemo.Lines.Add('Restauração cancelada pelo usuário.');
     FLblStatus.Caption := 'Cancelado.';
@@ -1265,15 +1299,14 @@ begin
   end;
   FSubtitle.Caption := 'Restaurando...';
   SetBusy(True);
-  TWizardWorker.Create(
-    procedure
+  TWizardWorker.Create(procedure
     begin
       FRestore.Execute(Options, FInstalled, OnProgress);
-    end,
-    procedure(const AError: string; APrecheck: Boolean)
+    end, procedure(const AError: string; APrecheck: Boolean)
     begin
       FSubtitle.Caption := '';
-      RunDone(AError, APrecheck, 'Restauração concluída. Abra a IDE para conferir o ambiente.');
+      RunDone(AError, APrecheck,
+        'Restauração concluída. Abra a IDE para conferir o ambiente.');
     end);
 end;
 
@@ -1288,8 +1321,7 @@ begin
   Diffs := 0;
   Total := 0;
   SetBusy(True);
-  TWizardWorker.Create(
-    procedure
+  TWizardWorker.Create(procedure
     var
       Engine: TCompareEngine;
       Res: TCompareResult;
@@ -1303,9 +1335,12 @@ begin
           for E in Res.Entries do
           begin
             case E.Kind of
-              dkAdded: Mark := '+';
-              dkRemoved: Mark := '-';
-              dkChanged: Mark := '~';
+              dkAdded:
+                Mark := '+';
+              dkRemoved:
+                Mark := '-';
+              dkChanged:
+                Mark := '~';
             else
               Mark := 'i';
             end;
@@ -1323,14 +1358,14 @@ begin
       finally
         Engine.Free;
       end;
-    end,
-    procedure(const AError: string; APrecheck: Boolean)
+    end, procedure(const AError: string; APrecheck: Boolean)
     var
       Msg: string;
     begin
       FSubtitle.Caption := '';
       if Diffs > 0 then
-        Msg := Format('Comparação concluída: %d diferença(s) em %d entrada(s).', [Diffs, Total])
+        Msg := Format('Comparação concluída: %d diferença(s) em %d entrada(s).',
+          [Diffs, Total])
       else
         Msg := 'Comparação concluída: nenhuma diferença encontrada.';
       RunDone(AError, APrecheck, Msg);

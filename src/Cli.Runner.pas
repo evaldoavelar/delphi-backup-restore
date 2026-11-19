@@ -12,7 +12,8 @@ implementation
 
 uses
   Winapi.Windows, System.SysUtils, System.Classes, System.Generics.Collections,
-  Core.Types, Core.Logger, Core.ProcessRunner, Core.SystemUtils, Core.VersionDetector,
+  Core.Types, Core.Logger, Core.ProcessRunner, Core.SystemUtils,
+  Core.VersionDetector,
   Core.PathDiscovery, Core.BackupEngine, Core.CompareEngine, Core.RestoreEngine,
   Core.DllScanner;
 
@@ -40,8 +41,8 @@ begin
   if (H = 0) or (H = INVALID_HANDLE_VALUE) then
   begin
     { GUI-subsystem exe attached to a console: standard handles are not set up }
-    H := CreateFile('CONOUT$', GENERIC_READ or GENERIC_WRITE, FILE_SHARE_READ or FILE_SHARE_WRITE,
-      nil, OPEN_EXISTING, 0, 0);
+    H := CreateFile('CONOUT$', GENERIC_READ or GENERIC_WRITE, FILE_SHARE_READ or
+      FILE_SHARE_WRITE, nil, OPEN_EXISTING, 0, 0);
     if H <> INVALID_HANDLE_VALUE then
     begin
       SetStdHandle(STD_OUTPUT_HANDLE, H);
@@ -94,7 +95,8 @@ begin
   Say('  --no-zip              Não compactar o backup em .zip');
   Say('  --scan-dlls           Incluir DLLs de terceiros encontradas no sistema');
   Say('  --categories <lista>  components,ide-config,experts,boss,extra,system-dll');
-  Say('  --config <arquivo>    Arquivo de configuração (padrão: ' + CONFIG_FILE_NAME + ' ao lado do exe)');
+  Say('  --config <arquivo>    Arquivo de configuração (padrão: ' +
+    CONFIG_FILE_NAME + ' ao lado do exe)');
   Say('');
   Say('Códigos de saída: 0 ok, 1 diferenças (compare), 2 erro, 3 pré-requisito, 4 uso inválido');
 end;
@@ -105,7 +107,7 @@ var
   S: string;
 begin
   Result := [];
-  Parts := TextToVersions(AText);  // same comma/semicolon splitting
+  Parts := TextToVersions(AText); // same comma/semicolon splitting
   for S in Parts do
     Include(Result, TextToItemCategory(S));
 end;
@@ -120,7 +122,7 @@ var
   function NeedValue: Boolean;
   begin
     if P > 0 then
-      Exit(True);  // value came as --name=value
+      Exit(True); // value came as --name=value
     if I < ParamCount then
     begin
       Inc(I);
@@ -163,33 +165,39 @@ begin
     end;
     if Name = '--versions' then
     begin
-      if not NeedValue then Exit;
+      if not NeedValue then
+        Exit;
       AOpts.Versions := TextToVersions(Value);
     end
     else if Name = '--dest' then
     begin
-      if not NeedValue then Exit;
+      if not NeedValue then
+        Exit;
       AOpts.Dest := Value;
     end
     else if Name = '--source' then
     begin
-      if not NeedValue then Exit;
+      if not NeedValue then
+        Exit;
       AOpts.Source := Value;
     end
     else if Name = '--config' then
     begin
-      if not NeedValue then Exit;
+      if not NeedValue then
+        Exit;
       AOpts.ConfigFile := Value;
     end
     else if Name = '--categories' then
     begin
-      if not NeedValue then Exit;
+      if not NeedValue then
+        Exit;
       try
         AOpts.Categories := ParseCategories(Value);
       except
         on E: Exception do
         begin
-          Say('Erro: ' + E.Message + ' (valores válidos: components, ide-config, experts, boss, extra, system-dll)');
+          Say('Erro: ' + E.Message +
+            ' (valores válidos: components, ide-config, experts, boss, extra, system-dll)');
           Exit;
         end;
       end;
@@ -212,8 +220,10 @@ end;
 function LevelPrefix(ALevel: TLogLevel): string;
 begin
   case ALevel of
-    llWarn: Result := 'AVISO: ';
-    llError: Result := 'ERRO: ';
+    llWarn:
+      Result := 'AVISO: ';
+    llError:
+      Result := 'ERRO: ';
   else
     Result := '';
   end;
@@ -222,15 +232,15 @@ end;
 function CreateConsoleLogger: ILogger;
 begin
   Result := CreateLogger;
-  Result.AddSink(
-    procedure(ALevel: TLogLevel; const AMessage: string)
+  Result.AddSink(procedure(ALevel: TLogLevel; const AMessage: string)
     begin
       if ALevel <> llDebug then
         Say(LevelPrefix(ALevel) + AMessage);
     end);
 end;
 
-function LoadConfig(const AOpts: TCliOptions; const ALogger: ILogger): TToolConfig;
+function LoadConfig(const AOpts: TCliOptions; const ALogger: ILogger)
+  : TToolConfig;
 var
   FileName: string;
 begin
@@ -249,8 +259,9 @@ end;
 
 { Builds a non-owning list with the requested versions. Prints an error and returns
   False when one of them is not installed. }
-function SelectVersions(const AOpts: TCliOptions; AInstalled: TDelphiVersionList;
-  ASelected: TDelphiVersionList; out ABds: TArray<string>): Boolean;
+function SelectVersions(const AOpts: TCliOptions;
+AInstalled: TDelphiVersionList; ASelected: TDelphiVersionList;
+out ABds: TArray<string>): Boolean;
 var
   V: TDelphiVersion;
   S: string;
@@ -268,7 +279,8 @@ begin
       V := AInstalled.FindByBds(S);
       if V = nil then
       begin
-        Say('Erro: a versão ' + S + ' não está instalada. Use o comando list para ver as versões.');
+        Say('Erro: a versão ' + S +
+          ' não está instalada. Use o comando list para ver as versões.');
         Exit(False);
       end;
       ASelected.Add(V);
@@ -362,9 +374,11 @@ begin
           It.Selected := True;
           Items.Add(It);
           Inc(Added);
-          Say(Format('  DLL: %s  %s  %s', [It.SourcePath, It.Company, It.FileVersion]));
+          Say(Format('  DLL: %s  %s  %s', [It.SourcePath, It.Company,
+            It.FileVersion]));
         end;
-        ALogger.Info(Format('%d DLL(s) de terceiros incluída(s) no backup.', [Added]));
+        ALogger.Info(Format('%d DLL(s) de terceiros incluída(s) no backup.',
+          [Added]));
       finally
         Dlls.Free;
       end;
@@ -435,9 +449,12 @@ end;
 function DiffMark(AKind: TDiffKind): string;
 begin
   case AKind of
-    dkAdded: Result := '+';
-    dkRemoved: Result := '-';
-    dkChanged: Result := '~';
+    dkAdded:
+      Result := '+';
+    dkRemoved:
+      Result := '-';
+    dkChanged:
+      Result := '~';
   else
     Result := 'i';
   end;
@@ -512,7 +529,8 @@ begin
     Say(TOOL_NAME + ' ' + ToolVersion);
     Exit(EXIT_OK);
   end;
-  if (Cmd <> 'list') and (Cmd <> 'backup') and (Cmd <> 'restore') and (Cmd <> 'compare') then
+  if (Cmd <> 'list') and (Cmd <> 'backup') and (Cmd <> 'restore') and
+    (Cmd <> 'compare') then
   begin
     Say('Erro: comando desconhecido "' + ParamStr(1) + '". Use --help.');
     Exit(EXIT_USAGE);
