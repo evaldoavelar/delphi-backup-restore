@@ -75,6 +75,8 @@ jobs:
           check 'System\.(Threading|Net\.)' 'System.Threading / System.Net are not available on Delphi XE8.'
           check '\bvar[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]*:=' 'Inline var with initialization (var X := ...) requires Delphi 10.3+.'
           check '\bconst[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]*:=' 'Inline const (const C := ...) requires Delphi 10.3+.'
+          check '\bvar[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]*:[^=;]*:=' 'Typed inline var (var X: T := ...) requires Delphi 10.3+.'
+          check '\b(THashSHA2|TTask|TParallel|TArray\.(Contains|IndexOf))\b' 'API not available on Delphi XE8 (THashSHA2, TTask, TParallel, TArray.Contains/IndexOf).'
           if [ "$has_error" -ne 0 ]; then
             exit 1
           fi
