@@ -10,7 +10,8 @@
 interface
 
 uses
-  Winapi.Windows, Winapi.Messages, Winapi.ShellAPI, System.SysUtils, System.Classes,
+  Winapi.Windows, Winapi.Messages, Winapi.ShellAPI, System.SysUtils,
+  System.Classes,
   System.Generics.Collections,
   Vcl.Controls, Vcl.Forms, Vcl.StdCtrls, Vcl.ExtCtrls, Vcl.ComCtrls,
   Vcl.CheckLst, Vcl.Dialogs,
@@ -80,6 +81,7 @@ type
     FProgress: TProgressBar;
     FLblStatus: TLabel;
 
+    function S(AValue: Integer): Integer;
     procedure BuildUI;
     function NewPanel: TPanel;
     function NewLabel(AParent: TWinControl; const ACaption: string): TLabel;
@@ -232,10 +234,14 @@ begin
   BorderStyle := bsSingle;
   BorderIcons := [biSystemMenu, biMinimize];
   Position := poScreenCenter;
-  ClientWidth := 780;
-  ClientHeight := 560;
   Font.Name := 'Segoe UI';
   Font.Size := 9;
+  ClientWidth := S(780);
+  ClientHeight := S(560);
+  if Width > Screen.WorkAreaWidth then
+    Width := Screen.WorkAreaWidth;
+  if Height > Screen.WorkAreaHeight then
+    Height := Screen.WorkAreaHeight;
   OnCloseQuery := WizardCloseQuery;
   BuildUI;
   { after BuildUI: detection logs go to the memo }
@@ -267,6 +273,11 @@ begin
   Result.Visible := False;
 end;
 
+function TMainWizard.S(AValue: Integer): Integer;
+begin
+  Result := MulDiv(AValue, Screen.PixelsPerInch, 96);
+end;
+
 function TMainWizard.NewLabel(AParent: TWinControl;
 const ACaption: string): TLabel;
 begin
@@ -276,6 +287,7 @@ begin
   Result.WordWrap := True;
   Result.AutoSize := True;
   Result.AlignWithMargins := True;
+  Result.Margins.Bottom := S(6);
   Result.Caption := ACaption;
 end;
 
@@ -285,8 +297,8 @@ begin
   Result := TButton.Create(Self);
   Result.Parent := AParent;
   Result.Caption := ACaption;
-  Result.Width := AWidth;
-  Result.Height := 28;
+  Result.Width := S(AWidth);
+  Result.Height := S(28);
   Result.OnClick := AClick;
 end;
 
@@ -298,13 +310,13 @@ begin
   Result := TPanel.Create(Self);
   Result.Parent := AParent;
   Result.Align := alBottom;
-  Result.Height := 34;
+  Result.Height := S(34);
   Result.BevelOuter := bvNone;
   Result.Caption := '';
   B := NewButton(Result, 'Marcar todos', 110, AMarkAll);
-  B.SetBounds(0, 4, 110, 28);
+  B.SetBounds(0, S(4), S(110), S(28));
   B := NewButton(Result, 'Desmarcar todos', 120, AMarkNone);
-  B.SetBounds(118, 4, 120, 28);
+  B.SetBounds(S(118), S(4), S(120), S(28));
 end;
 
 procedure TMainWizard.BuildUI;
@@ -315,46 +327,53 @@ begin
   FHeader := TPanel.Create(Self);
   FHeader.Parent := Self;
   FHeader.Align := alTop;
-  FHeader.Height := 56;
+  FHeader.Height := S(56);
   FHeader.BevelOuter := bvNone;
   FHeader.Caption := '';
   FHeader.Color := clWhite;
   FHeader.ParentBackground := False;
   FTitle := TLabel.Create(Self);
   FTitle.Parent := FHeader;
-  FTitle.SetBounds(16, 8, 740, 24);
+  FTitle.AutoSize := True;
   FTitle.Font.Size := 13;
   FTitle.Font.Style := [fsBold];
+  FTitle.Caption := ' ';
+  FTitle.SetBounds(S(16), S(8), S(740), FTitle.Height);
   FSubtitle := TLabel.Create(Self);
   FSubtitle.Parent := FHeader;
-  FSubtitle.SetBounds(16, 34, 740, 16);
+  FSubtitle.AutoSize := True;
+  FSubtitle.Caption := ' ';
+  FSubtitle.SetBounds(S(16), FTitle.Top + FTitle.Height + S(2), S(740),
+    FSubtitle.Height);
+  FHeader.Height := FSubtitle.Top + FSubtitle.Height + S(8);
 
   FBottom := TPanel.Create(Self);
   FBottom.Parent := Self;
   FBottom.Align := alBottom;
-  FBottom.Height := 48;
+  FBottom.Height := S(48);
   FBottom.BevelOuter := bvNone;
   FBottom.Caption := '';
   Line := TBevel.Create(Self);
   Line.Parent := FBottom;
   Line.Align := alTop;
-  Line.Height := 2;
+  Line.Height := S(2);
   Line.Shape := bsTopLine;
   FBtnClose := NewButton(FBottom, 'Fechar', 90, CloseClick);
-  FBtnClose.SetBounds(780 - 16 - 90, 10, 90, 28);
+  FBtnClose.SetBounds(ClientWidth - S(16 + 90), S(10), S(90), S(28));
   FBtnClose.Anchors := [akTop, akRight];
   FBtnNext := NewButton(FBottom, 'Avançar >', 100, NextClick);
-  FBtnNext.SetBounds(780 - 16 - 90 - 8 - 100, 10, 100, 28);
+  FBtnNext.SetBounds(ClientWidth - S(16 + 90 + 8 + 100), S(10), S(100), S(28));
   FBtnNext.Anchors := [akTop, akRight];
   FBtnNext.Default := True;
   FBtnBack := NewButton(FBottom, '< Voltar', 100, BackClick);
-  FBtnBack.SetBounds(780 - 16 - 90 - 8 - 100 - 8 - 100, 10, 100, 28);
+  FBtnBack.SetBounds(ClientWidth - S(16 + 90 + 8 + 100 + 8 + 100), S(10),
+    S(100), S(28));
   FBtnBack.Anchors := [akTop, akRight];
 
   for P := Low(TWizPage) to High(TWizPage) do
   begin
     FPanels[P] := NewPanel;
-    FPanels[P].BorderWidth := 16;
+    FPanels[P].BorderWidth := S(16);
   end;
   BuildModePage;
   BuildVersionsPage;
@@ -368,7 +387,7 @@ begin
   FRgMode := TRadioGroup.Create(Self);
   FRgMode.Parent := FPanels[wpMode];
   FRgMode.Align := alTop;
-  FRgMode.Height := 130;
+  FRgMode.Height := S(130);
   FRgMode.Caption := ' Operação ';
   FRgMode.Items.Add('Fazer backup do ambiente Delphi desta máquina');
   FRgMode.Items.Add('Restaurar um backup nesta máquina');
@@ -379,21 +398,21 @@ begin
     'Dica: instale as versões do Delphi (da mais antiga para a mais nova) antes de restaurar. '
     + 'A restauração sobrescreve componentes, configurações da IDE e chaves de registro.');
   FLblAdmin := NewLabel(FPanels[wpMode],
-    'Para restaurar é necessário executar como administrador. Este programa não está ' +
-    'elevado: reinicie-o como administrador para continuar.');
+    'Para restaurar é necessário executar como administrador. Este programa não está '
+    + 'elevado: reinicie-o como administrador para continuar.');
   FLblAdmin.Font.Style := [fsBold];
   FLblAdmin.Font.Color := clMaroon;
   FLblAdmin.Visible := False;
   FPnlElevate := TPanel.Create(Self);
   FPnlElevate.Parent := FPanels[wpMode];
   FPnlElevate.Align := alTop;
-  FPnlElevate.Height := 40;
+  FPnlElevate.Height := S(40);
   FPnlElevate.BevelOuter := bvNone;
   FPnlElevate.Caption := '';
   FPnlElevate.Visible := False;
   FBtnElevate := NewButton(FPnlElevate, 'Reiniciar como administrador', 210,
     ElevateClick);
-  FBtnElevate.SetBounds(0, 8, 210, 28);
+  FBtnElevate.SetBounds(0, S(8), S(210), S(28));
 end;
 
 procedure TMainWizard.BuildVersionsPage;
@@ -422,22 +441,36 @@ begin
 end;
 
 procedure TMainWizard.BuildPathPage;
+var
+  Row: TPanel;
 begin
   FLblPath := NewLabel(FPanels[wpPath], '');
+  Row := TPanel.Create(Self);
+  Row.Parent := FPanels[wpPath];
+  Row.Align := alTop;
+  Row.Height := S(30);
+  Row.BevelOuter := bvNone;
+  Row.Caption := '';
+  FBtnBrowse := NewButton(Row, 'Pasta...', 90, BrowseFolderClick);
+  FBtnBrowse.Align := alRight;
+  FBtnBrowse.AlignWithMargins := True;
+  FBtnBrowse.Margins.Left := S(6);
+  FBtnBrowse.Margins.Top := 0;
+  FBtnBrowse.Margins.Bottom := 0;
+  FBtnBrowseZip := NewButton(Row, 'Arquivo .zip...', 110, BrowseZipClick);
+  FBtnBrowseZip.Align := alRight;
+  FBtnBrowseZip.AlignWithMargins := True;
+  FBtnBrowseZip.Margins.Left := S(6);
+  FBtnBrowseZip.Margins.Top := 0;
+  FBtnBrowseZip.Margins.Bottom := 0;
   FEdtPath := TEdit.Create(Self);
-  FEdtPath.Parent := FPanels[wpPath];
-  FEdtPath.SetBounds(0, 30, 650, 24);
-  FEdtPath.Anchors := [akLeft, akTop, akRight];
-  FBtnBrowse := NewButton(FPanels[wpPath], 'Pasta...', 90, BrowseFolderClick);
-  FBtnBrowse.SetBounds(656, 28, 90, 28);
-  FBtnBrowse.Anchors := [akTop, akRight];
-  FBtnBrowseZip := NewButton(FPanels[wpPath], 'Arquivo .zip...', 100,
-    BrowseZipClick);
-  FBtnBrowseZip.SetBounds(656, 62, 90, 28);
-  FBtnBrowseZip.Anchors := [akTop, akRight];
+  FEdtPath.Parent := Row;
+  FEdtPath.Align := alClient;
   FChkZip := TCheckBox.Create(Self);
   FChkZip.Parent := FPanels[wpPath];
-  FChkZip.SetBounds(0, 66, 400, 20);
+  FChkZip.Align := alTop;
+  FChkZip.AlignWithMargins := True;
+  FChkZip.Margins.Top := S(8);
   FChkZip.Caption := 'Compactar o backup em um arquivo .zip';
   FChkZip.Checked := True;
 end;
@@ -448,7 +481,7 @@ begin
   FProgress := TProgressBar.Create(Self);
   FProgress.Parent := FPanels[wpRun];
   FProgress.Align := alBottom;
-  FProgress.Height := 18;
+  FProgress.Height := S(18);
   FMemo := TMemo.Create(Self);
   FMemo.Parent := FPanels[wpRun];
   FMemo.Align := alClient;
@@ -577,8 +610,8 @@ begin
   FBtnBack.Visible := FPage <> wpMode;
   FBtnBack.Enabled := not FBusy;
   FBtnNext.Visible := FPage <> wpRun;
-  FBtnNext.Enabled := not FBusy and not ((FPage = wpMode) and
-    (FMode = wmRestore) and not IsRunningAsAdmin);
+  FBtnNext.Enabled := not FBusy and not((FPage = wpMode) and (FMode = wmRestore)
+    and not IsRunningAsAdmin);
   FLblAdmin.Visible := (FMode = wmRestore) and not IsRunningAsAdmin;
   FPnlElevate.Visible := FLblAdmin.Visible;
   if NextPageOf(FPage) = wpRun then
@@ -757,7 +790,8 @@ begin
   if ShellExecuteEx(@Info) then
     Close
   else if GetLastError = ERROR_CANCELLED then
-    MessageDlg('A elevação foi cancelada. O programa continua sem privilégios de administrador.',
+    MessageDlg
+      ('A elevação foi cancelada. O programa continua sem privilégios de administrador.',
       mtWarning, [mbOK], 0)
   else
     MessageDlg('Não foi possível reiniciar como administrador: ' +
