@@ -50,6 +50,8 @@ type
     procedure TestReadPeImports;
     [Test]
     procedure TestCountAndDeleteTreeWithLongPaths;
+    [Test]
+    procedure TestComponentRootBelowDriveRoot;
   end;
 
 implementation
@@ -425,6 +427,26 @@ begin
   { safety: never a drive root or an empty path }
   Assert.IsFalse(DeleteTree('C:\'));
   Assert.IsFalse(DeleteTree(''));
+end;
+
+procedure TTestCoreSafety.TestComponentRootBelowDriveRoot;
+var
+  Safety: TPathSafety;
+begin
+  { regression: climbing from C:\SomeLibs produced the drive-relative "C:" (current
+    folder of drive C), which escaped every check and became a backup root }
+  Safety := TPathSafety.Create(nil);
+  try
+    Assert.AreEqual('C:\SomeLibs',
+      Safety.ComponentRoot('C:\SomeLibs\Vendor\src\win32'));
+    Assert.IsTrue(Safety.IsContainer('C:'), 'drive-relative C: is a container');
+    Assert.IsTrue(Safety.IsContainer('C:\'), 'drive root');
+    Assert.AreEqual('', Safety.ComponentRoot('C:'), 'drive-relative path rejected');
+    Assert.AreEqual('', Safety.ComponentRoot('relative\path'),
+      'relative path rejected');
+  finally
+    Safety.Free;
+  end;
 end;
 
 initialization

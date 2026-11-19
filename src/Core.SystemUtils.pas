@@ -262,6 +262,18 @@ begin
   Result := 0;
 end;
 
+function LongPathName(const APath: string): string;
+var
+  Buffer: array [0 .. 32767] of Char;
+  Len: DWORD;
+begin
+  Len := GetLongPathName(PChar(APath), Buffer, Length(Buffer));
+  if (Len > 0) and (Len < DWORD(Length(Buffer))) then
+    SetString(Result, Buffer, Len)
+  else
+    Result := APath;
+end;
+
 function NormalizePath(const APath: string): string;
 begin
   Result := '';
@@ -269,6 +281,10 @@ begin
     Exit;
   try
     Result := ExpandFileName(APath);
+    { resolve 8.3 aliases ("PROGRA~2") of existing paths, so an alias never escapes
+      a comparison against the long name }
+    if (Pos('~', Result) > 0) and (FileExists(Result) or DirectoryExists(Result)) then
+      Result := LongPathName(Result);
     { keep drive roots as "C:\": a bare "C:" means "current folder of drive C" }
     if not((Length(Result) = 3) and (Result[2] = ':')) then
       Result := ExcludeTrailingPathDelimiter(Result);
