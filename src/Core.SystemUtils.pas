@@ -274,10 +274,15 @@ function IsPathInside(const APath, AParent: string): Boolean;
 var
   P, R: string;
 begin
-  P := IncludeTrailingPathDelimiter(NormalizePath(APath));
-  R := IncludeTrailingPathDelimiter(NormalizePath(AParent));
-  Result := (P <> '') and (R <> '') and (Length(P) >= Length(R)) and
-    SameText(Copy(P, 1, Length(R)), R);
+  { Lexical only: never touches the disk. Empty or invalid input is never inside. }
+  Result := False;
+  P := NormalizePath(APath);
+  R := NormalizePath(AParent);
+  if (P = '') or (R = '') then
+    Exit;
+  P := IncludeTrailingPathDelimiter(P);
+  R := IncludeTrailingPathDelimiter(R);
+  Result := (Length(P) >= Length(R)) and SameText(Copy(P, 1, Length(R)), R);
 end;
 
 function GetUserPathEnv: string;
