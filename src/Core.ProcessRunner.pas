@@ -9,6 +9,7 @@ function CreateProcessRunner(const ALogger: ILogger): IProcessRunner;
 implementation
 
 uses
+  Core.SystemUtils,
   System.SysUtils, System.Classes, System.StrUtils, System.Win.Registry,
   Winapi.Windows;
 
@@ -61,10 +62,23 @@ end;
 
 function TProcessRunner.Run(const AExe, AArgs, AWorkDir: string;
   out AOutput: string): Cardinal;
+var
+  Exe, SystemExe: string;
 begin
+  { Windows tools (robocopy, reg, tar) always from the system folder: another
+    tar.exe/reg.exe in the app or current folder (e.g. Git's GNU tar, which cannot
+    read zip files) must never be picked up. A 32-bit process is redirected to
+    SysWOW64, which keeps the 32-bit registry view used by the Delphi keys. }
+  Exe := AExe;
+  if ExtractFilePath(Exe) = '' then
+  begin
+    SystemExe := IncludeTrailingPathDelimiter(GetSystem32Dir) + Exe;
+    if FileExists(SystemExe) then
+      Exe := SystemExe;
+  end;
   if Assigned(FLogger) then
-    FLogger.Debug('Executando processo: ' + AExe + ' ' + AArgs);
-  Result := RunTool(AExe, AArgs, AWorkDir, AOutput);
+    FLogger.Debug('Executando processo: ' + Exe + ' ' + AArgs);
+  Result := RunTool(Exe, AArgs, AWorkDir, AOutput);
   if Assigned(FLogger) then
     FLogger.Debug(Format('Processo finalizado com código %d', [Result]));
 end;
