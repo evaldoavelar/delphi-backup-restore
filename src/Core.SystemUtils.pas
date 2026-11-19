@@ -20,6 +20,12 @@ function GetUserPathEnv: string;
 procedure SetUserPathEnv(const AValue: string);
 function ToolVersion: string;
 function MachineName: string;
+{ Number of files below AFolder (recursive, long paths supported, reparse points
+  not followed). -1 when the folder cannot be read. }
+function CountFilesInTree(const AFolder: string): Integer;
+{ Deletes AFolder and everything below it (long paths supported). True when the
+  folder no longer exists afterwards. }
+function DeleteTree(const AFolder: string): Boolean;
 
 implementation
 
@@ -327,6 +333,106 @@ begin
   end;
   SendMessageTimeout(HWND_BROADCAST, WM_SETTINGCHANGE_MESSAGE, 0,
     LPARAM(PChar('Environment')), SMTO_ABORTIFHUNG, 5000, nil);
+end;
+
+function LongPathPrefix(const APath: string): string;
+begin
+  if Copy(APath, 1, 4) = '\\?\' then
+    Result := APath
+  else if Copy(APath, 1, 2) = '\\' then
+    Result := '\\?\UNC\' + Copy(APath, 3, MaxInt)
+  else
+    Result := '\\?\' + APath;
+end;
+
+function CountFilesInTreeLong(const ALongDir: string): Integer;
+var
+  Find: TWin32FindData;
+  H: THandle;
+  Name: string;
+  Sub: Integer;
+begin
+  Result := 0;
+  H := FindFirstFile(PChar(IncludeTrailingPathDelimiter(ALongDir) + '*'), Find);
+  if H = INVALID_HANDLE_VALUE then
+    Exit(-1);
+  try
+    repeat
+      Name := Find.cFileName;
+      if (Name = '.') or (Name = '..') then
+        Continue;
+      if (Find.dwFileAttributes and FILE_ATTRIBUTE_DIRECTORY) <> 0 then
+      begin
+        if (Find.dwFileAttributes and FILE_ATTRIBUTE_REPARSE_POINT) <> 0 then
+          Continue;
+        Sub := CountFilesInTreeLong
+          (IncludeTrailingPathDelimiter(ALongDir) + Name);
+        if Sub < 0 then
+          Exit(-1);
+        Inc(Result, Sub);
+      end
+      else
+        Inc(Result);
+    until not FindNextFile(H, Find);
+  finally
+    Winapi.Windows.FindClose(H);
+  end;
+end;
+
+function CountFilesInTree(const AFolder: string): Integer;
+var
+  P: string;
+begin
+  P := NormalizePath(AFolder);
+  if (P = '') or not DirectoryExists(P) then
+    Exit(-1);
+  Result := CountFilesInTreeLong(LongPathPrefix(P));
+end;
+
+procedure DeleteTreeLong(const ALongDir: string);
+var
+  Find: TWin32FindData;
+  H: THandle;
+  Name, Full: string;
+begin
+  H := FindFirstFile(PChar(IncludeTrailingPathDelimiter(ALongDir) + '*'), Find);
+  if H <> INVALID_HANDLE_VALUE then
+    try
+      repeat
+        Name := Find.cFileName;
+        if (Name = '.') or (Name = '..') then
+          Continue;
+        Full := IncludeTrailingPathDelimiter(ALongDir) + Name;
+        if (Find.dwFileAttributes and FILE_ATTRIBUTE_READONLY) <> 0 then
+          SetFileAttributes(PChar(Full), Find.dwFileAttributes and
+            not FILE_ATTRIBUTE_READONLY);
+        if (Find.dwFileAttributes and FILE_ATTRIBUTE_DIRECTORY) <> 0 then
+        begin
+          { a reparse point (junction/symlink) is removed, never followed }
+          if (Find.dwFileAttributes and FILE_ATTRIBUTE_REPARSE_POINT) = 0 then
+            DeleteTreeLong(Full);
+          Winapi.Windows.RemoveDirectory(PChar(Full));
+        end
+        else
+          Winapi.Windows.DeleteFile(PChar(Full));
+      until not FindNextFile(H, Find);
+    finally
+      Winapi.Windows.FindClose(H);
+    end;
+  Winapi.Windows.RemoveDirectory(PChar(ExcludeTrailingPathDelimiter(ALongDir)));
+end;
+
+function DeleteTree(const AFolder: string): Boolean;
+var
+  P: string;
+begin
+  P := NormalizePath(AFolder);
+  { never delete a drive root or an empty/invalid path }
+  if (P = '') or (Length(P) <= 3) then
+    Exit(False);
+  if DirectoryExists(P) then
+    DeleteTreeLong(LongPathPrefix(P));
+  Result := not DirectoryExists(P);
 end;
 
 function ToolVersion: string;

@@ -10,6 +10,8 @@ type
     FLogger: ILogger;
     FRunner: IProcessRunner;
     FFailureCount: Integer;
+    function ZipFileCount(const AZip: string): Integer;
+    procedure RemoveFolderAfterZip(const AFolder, AZip: string);
   public
     constructor Create(const ALogger: ILogger; const ARunner: IProcessRunner);
     function Execute(const AOptions: TBackupOptions;
@@ -19,7 +21,7 @@ type
     property FailureCount: Integer read FFailureCount;
   end;
 
-{ True when the item would be processed by a backup with these options. }
+  { True when the item would be processed by a backup with these options. }
 function ItemInScope(AItem: TBackupItem; const AOptions: TBackupOptions;
   AVersions: TDelphiVersionList): Boolean;
 { Bytes the item occupies on disk (metadata only, files are never opened).
@@ -82,8 +84,8 @@ begin
         end;
       end;
     ikFile, ikDll:
-      if GetFileAttributesEx(PChar(AItem.SourcePath), GetFileExInfoStandard, @Info)
-      then
+      if GetFileAttributesEx(PChar(AItem.SourcePath), GetFileExInfoStandard,
+        @Info) then
         Result := (Int64(Info.nFileSizeHigh) shl 32) or Info.nFileSizeLow;
   end;
 end;
@@ -125,6 +127,52 @@ begin
   FLogger := ALogger;
   FRunner := ARunner;
   FLogger.Debug('Criando serviço de backup.');
+end;
+
+function TBackupEngine.ZipFileCount(const AZip: string): Integer;
+var
+  Output: string;
+  Lines: TStringList;
+  I: Integer;
+  Line: string;
+begin
+  { tar -t lists one entry per line; folders end with '/' }
+  Result := -1;
+  if FRunner.Run('tar.exe', '-t -f "' + AZip + '"', '', Output) <> 0 then
+    Exit;
+  Lines := TStringList.Create;
+  try
+    Lines.Text := Output;
+    Result := 0;
+    for I := 0 to Lines.Count - 1 do
+    begin
+      Line := Trim(Lines[I]);
+      if (Line <> '') and (Line[Length(Line)] <> '/') then
+        Inc(Result);
+    end;
+  finally
+    Lines.Free;
+  end;
+end;
+
+procedure TBackupEngine.RemoveFolderAfterZip(const AFolder, AZip: string);
+var
+  InFolder, InZip: Integer;
+begin
+  InFolder := CountFilesInTree(AFolder);
+  InZip := ZipFileCount(AZip);
+  FLogger.Info(Format('Conferindo o zip: %d arquivo(s) na pasta, %d no zip.',
+    [InFolder, InZip]));
+  if (InFolder < 0) or (InZip <> InFolder) then
+  begin
+    FLogger.Warn('O zip não confere com a pasta; a pasta foi mantida: '
+      + AFolder);
+    Exit;
+  end;
+  if DeleteTree(AFolder) then
+    FLogger.Info('Pasta removida (o backup está no zip): ' + AFolder)
+  else
+    FLogger.Warn('Não foi possível remover a pasta do backup: ' + AFolder);
 end;
 
 function TBackupEngine.Execute(const AOptions: TBackupOptions;
@@ -188,7 +236,8 @@ begin
       if AOptions.CreateZip then
         Inc(Needed, Estimated);
       FreeBytes := FreeSpaceAt(AOptions.Destination);
-      FLogger.Info(Format('Tamanho estimado: %s; necessário no destino: %s; livre: %s.',
+      FLogger.Info
+        (Format('Tamanho estimado: %s; necessário no destino: %s; livre: %s.',
         [FormatBytes(Estimated), FormatBytes(Needed), FormatBytes(FreeBytes)]));
       if (FreeBytes >= 0) and (FreeBytes < Needed) then
         raise EDelphiBackupError.CreateFmt
@@ -291,10 +340,17 @@ begin
       Result := Root;
       if AOptions.CreateZip then
       begin
+        FLogger.Info(Format('Cópia concluída com %d falha(s). Compactando...',
+          [Failures]));
+        { close backup.log so the zip gets the complete file and the folder can
+          be deleted; later messages still reach the console/GUI sinks }
+        FLogger.SetLogFile('');
         Zip := Root + '.zip';
         if not FRunner.ZipFolder(Root, Zip) then
           raise EDelphiBackupError.Create('Falha ao compactar backup.');
         Result := Zip;
+        if not AOptions.KeepFolder then
+          RemoveFolderAfterZip(Root, Zip);
       end;
       FFailureCount := Failures;
       FLogger.Info(Format('Backup concluído: %s; falhas: %d.',

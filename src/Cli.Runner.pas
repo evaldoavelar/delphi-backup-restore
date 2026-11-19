@@ -26,6 +26,7 @@ type
     NoZip: Boolean;
     ScanDlls: Boolean;
     DryRun: Boolean;
+    KeepFolder: Boolean;
     Categories: TItemCategories;
     CategoriesGiven: Boolean;
     ConfigFile: string;
@@ -97,6 +98,7 @@ begin
   Say('  --no-zip              Não compactar o backup em .zip');
   Say('  --scan-dlls           Incluir DLLs de terceiros encontradas no sistema');
   Say('  --dry-run             backup: só lista os itens e o tamanho estimado, sem copiar');
+  Say('  --keep-folder         backup: mantém a pasta além do .zip (padrão: remove após conferir)');
   Say('  --categories <lista>  components,ide-config,experts,boss,extra,system-dll');
   Say('  --config <arquivo>    Arquivo de configuração (padrão: ' +
     CONFIG_FILE_NAME + ' ao lado do exe)');
@@ -148,6 +150,7 @@ begin
   AOpts.NoZip := False;
   AOpts.ScanDlls := False;
   AOpts.DryRun := False;
+  AOpts.KeepFolder := False;
   AOpts.Categories := [];
   AOpts.CategoriesGiven := False;
   AOpts.ConfigFile := '';
@@ -213,6 +216,8 @@ begin
       AOpts.ScanDlls := True
     else if Name = '--dry-run' then
       AOpts.DryRun := True
+    else if Name = '--keep-folder' then
+      AOpts.KeepFolder := True
     else
     begin
       Say('Erro: opção desconhecida "' + Arg + '".');
@@ -321,8 +326,8 @@ end;
 
 { --dry-run: lists what a backup would copy, with sizes; copies nothing. }
 function PrintDryRun(const AOptions: TBackupOptions;
-  AVersions: TDelphiVersionList; AItems: TBackupItemList; AConfig: TToolConfig;
-  const ADest: string): Integer;
+AVersions: TDelphiVersionList; AItems: TBackupItemList; AConfig: TToolConfig;
+const ADest: string): Integer;
 var
   It: TBackupItem;
   Size, Total, FreeBytes, Needed: Int64;
@@ -337,8 +342,9 @@ begin
       Size := EstimateItemSize(It, AConfig);
       Inc(Total, Size);
       Inc(Count);
-      Say(Format('  %-5s %-11s %10s  %s', [It.Id, ItemCategoryToText(It.Category),
-        FormatBytes(Size), It.SourcePath]));
+      Say(Format('  %-5s %-11s %10s  %s',
+        [It.Id, ItemCategoryToText(It.Category), FormatBytes(Size),
+        It.SourcePath]));
     end;
   Needed := Total + Total div 20;
   if AOptions.CreateZip then
@@ -396,6 +402,7 @@ begin
     Options.Versions := Bds;
     Options.Destination := AOpts.Dest;
     Options.CreateZip := not AOpts.NoZip;
+    Options.KeepFolder := AOpts.KeepFolder;
     Options.ScanDlls := AOpts.ScanDlls;
     if AOpts.CategoriesGiven then
       Options.Categories := AOpts.Categories

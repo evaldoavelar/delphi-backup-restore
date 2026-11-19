@@ -77,6 +77,7 @@ type
     FBtnBrowse: TButton;
     FBtnBrowseZip: TButton;
     FChkZip: TCheckBox;
+    FChkKeepFolder: TCheckBox;
     FMemo: TMemo;
     FProgress: TProgressBar;
     FLblStatus: TLabel;
@@ -100,6 +101,7 @@ type
     function PrevPageOf(APage: TWizPage): TWizPage;
     procedure UpdateButtons;
     procedure SetBusy(ABusy: Boolean);
+    procedure ZipCheckClick(Sender: TObject);
     procedure AppendLog(const AText: string);
     procedure ResetSession;
 
@@ -473,6 +475,17 @@ begin
   FChkZip.Margins.Top := S(8);
   FChkZip.Caption := 'Compactar o backup em um arquivo .zip';
   FChkZip.Checked := True;
+  FChkZip.OnClick := ZipCheckClick;
+  FChkKeepFolder := TCheckBox.Create(Self);
+  FChkKeepFolder.Parent := FPanels[wpPath];
+  FChkKeepFolder.Align := alTop;
+  FChkKeepFolder.AlignWithMargins := True;
+  FChkKeepFolder.Margins.Top := S(4);
+  FChkKeepFolder.Margins.Left := S(20);
+  FChkKeepFolder.Top := FChkZip.Top + FChkZip.Height + S(1);
+  FChkKeepFolder.Caption :=
+    'Manter também a pasta (por padrão ela é removida depois de conferir o .zip)';
+  FChkKeepFolder.Checked := False;
 end;
 
 procedure TMainWizard.BuildRunPage;
@@ -636,6 +649,12 @@ begin
     FProgress.Style := pbstNormal;
   end;
   UpdateButtons;
+end;
+
+procedure TMainWizard.ZipCheckClick(Sender: TObject);
+begin
+  { "keep folder" only makes sense when a zip is created }
+  FChkKeepFolder.Enabled := FChkZip.Checked;
 end;
 
 procedure TMainWizard.AppendLog(const AText: string);
@@ -1135,6 +1154,8 @@ begin
     FBtnBrowse.Caption := 'Procurar...';
     FBtnBrowseZip.Visible := False;
     FChkZip.Visible := True;
+    FChkKeepFolder.Visible := True;
+    FChkKeepFolder.Enabled := FChkZip.Checked;
   end
   else
   begin
@@ -1146,6 +1167,7 @@ begin
     FBtnBrowseZip.Caption := 'Arquivo .zip...';
     FBtnBrowseZip.Visible := True;
     FChkZip.Visible := False;
+    FChkKeepFolder.Visible := False;
   end;
 end;
 
@@ -1301,6 +1323,7 @@ begin
   Options.Versions := FSelBds;
   Options.Destination := FDestText;
   Options.CreateZip := FChkZip.Checked;
+  Options.KeepFolder := FChkZip.Checked and FChkKeepFolder.Checked;
   Options.ScanDlls := FChkDlls.Checked;
   Options.Categories := DefaultBackupCategories;
   if FChkDlls.Checked then

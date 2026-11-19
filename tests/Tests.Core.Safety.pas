@@ -48,6 +48,8 @@ type
     procedure TestItemInScope;
     [Test]
     procedure TestReadPeImports;
+    [Test]
+    procedure TestCountAndDeleteTreeWithLongPaths;
   end;
 
 implementation
@@ -406,6 +408,23 @@ begin
   finally
     Imports.Free;
   end;
+end;
+
+procedure TTestCoreSafety.TestCountAndDeleteTreeWithLongPaths;
+var
+  Root: string;
+begin
+  Root := FTemp + '\apagar';
+  MakeFile(Root + '\a.txt', 1);
+  MakeFile(Root + '\sub\b.txt', 1);
+  MakeFile(StringReplace(LongDir, FTemp + '\lib', Root, []) + '\c.txt', 1);
+  Assert.AreEqual(3, CountFilesInTree(Root));
+  Assert.AreEqual(-1, CountFilesInTree(Root + '\nao-existe'));
+  Assert.IsTrue(DeleteTree(Root), 'tree removed');
+  Assert.IsFalse(DirectoryExists(Root));
+  { safety: never a drive root or an empty path }
+  Assert.IsFalse(DeleteTree('C:\'));
+  Assert.IsFalse(DeleteTree(''));
 end;
 
 initialization

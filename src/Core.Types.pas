@@ -223,6 +223,9 @@ type
     Destination: string;
     // parent folder; engine creates DelphiEnv_<MACHINE>_<stamp>
     CreateZip: Boolean; // default True
+    { with CreateZip: keep the backup folder next to the .zip. Default False: the
+      folder is deleted after the zip is verified (same file count). }
+    KeepFolder: Boolean;
     ScanDlls: Boolean; // default False
     Categories: TItemCategories; // default all except icSystemDll
   end;
@@ -316,7 +319,8 @@ function TextToItemCategory(const AText: string): TItemCategory;
 function AllCategories: TItemCategories;
 function DefaultBackupCategories: TItemCategories; // all except icSystemDll
 { Version identifiers: 'D7.0' = Borland Delphi 7, '5.0' = BDS 5.0 (Delphi 2007), see BdsVersion }
-function LegacyDelphiId(const ARegistryVersion: string): string; // '7.0' -> 'D7.0'
+function LegacyDelphiId(const ARegistryVersion: string): string;
+// '7.0' -> 'D7.0'
 function IsLegacyDelphiId(const AId: string): Boolean; // starts with 'D'
 function VersionIdNumber(const AId: string): string; // 'D7.0' -> '7.0'
 
