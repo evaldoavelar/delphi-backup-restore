@@ -29,3 +29,6 @@ test-output/
 
 # agent worktrees (see AGENTS.md)
 .wc/
+
+# editor settings
+.vscode/
