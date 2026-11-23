@@ -197,6 +197,7 @@ type
     CreatedUtc: string;
     SourceUserProfile: string;
     // e.g. 'C:\Users\Desenvolvimento' (for path remapping)
+    SourceDocumentsDir: string;
     SourcePublicDir: string; // e.g. 'C:\Users\Public'
     UserPath: string; // user PATH environment variable at backup time
     HasExclusions: Boolean; // both exclusion fields were recorded

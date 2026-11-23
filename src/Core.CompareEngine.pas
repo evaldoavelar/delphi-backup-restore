@@ -20,7 +20,7 @@ function DiffManifests(ABackup, ACurrent: TManifest;
 
 implementation
 
-uses System.SysUtils, System.IOUtils, System.Classes,
+uses System.SysUtils, System.IOUtils, System.Classes, System.DateUtils,
   Core.Manifest, Core.SystemUtils, Core.Logger;
 
 function Remap(const P, OldProfile, NewProfile: string): string;
@@ -67,6 +67,22 @@ begin
   for F in M.Files do
     if SameText(F.RelPath, P) then
       Exit(F);
+end;
+
+function SameModifiedTime(const A, B: string): Boolean;
+var
+  LeftTime, RightTime: TDateTime;
+begin
+  if A = B then
+    Exit(True);
+  try
+    LeftTime := ISO8601ToDate(A);
+    RightTime := ISO8601ToDate(B);
+  except
+    on E: EConvertError do
+      Exit(False);
+  end;
+  Result := MilliSecondsBetween(LeftTime, RightTime) <= 2000;
 end;
 
 function DiffManifests(ABackup, ACurrent: TManifest;
@@ -123,14 +139,16 @@ begin
         G := FindFile(M, F.RelPath);
         if G = nil then
           Result.Add(dkRemoved, B.Item.Id, F.RelPath, 'Arquivo ausente')
-        else if (F.Size <> G.Size) or (F.ModifiedUtc <> G.ModifiedUtc) then
+        else if (F.Size <> G.Size) or not SameModifiedTime(F.ModifiedUtc,
+          G.ModifiedUtc) then
           Result.Add(dkChanged, B.Item.Id, F.RelPath, 'Arquivo alterado');
       end;
       for F in M.Files do
         if FindFile(B, F.RelPath) = nil then
           Result.Add(dkAdded, B.Item.Id, F.RelPath, 'Arquivo adicionado');
     end;
-    L.Debug(Format('Comparação de manifestos concluída: %d diferenças.', [Result.Entries.Count]));
+    L.Debug(Format('Comparação de manifestos concluída: %d diferenças.',
+      [Result.Entries.Count]));
   except
     Result.Free;
     raise;
@@ -179,7 +197,8 @@ begin
             ('Arquivo ZIP não contém uma única pasta de backup.');
         Root := Dirs[0];
         if PathHasReparsePoint(TPath.Combine(Root, BACKUP_MANIFEST_FILE)) then
-          raise EDelphiBackupError.Create('Caminho inválido dentro do ZIP: ' + Root);
+          raise EDelphiBackupError.Create
+            ('Caminho inválido dentro do ZIP: ' + Root);
       end;
       B := LoadManifest(TPath.Combine(Root, BACKUP_MANIFEST_FILE));
       if B.HasExclusions then
@@ -200,7 +219,8 @@ begin
         It.SourcePath := Remap(M.Item.SourcePath, B.SourceUserProfile,
           GetUserProfileDir);
         if ((It.Kind = ikFolder) and not DirectoryExists(It.SourcePath)) or
-          ((It.Kind in [ikFile, ikDll]) and not FileExists(RealFileSystemPath(It.SourcePath))) or
+          ((It.Kind in [ikFile, ikDll]) and
+          not FileExists(RealFileSystemPath(It.SourcePath))) or
           ((It.Kind = ikRegistry) and not FRunner.RegKeyExists(It.SourcePath))
         then
         begin

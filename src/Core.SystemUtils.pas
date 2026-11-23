@@ -44,20 +44,33 @@ uses
 function GetSystemWow64Directory(lpBuffer: PWideChar; uSize: UINT): UINT;
   stdcall; external kernel32 name 'GetSystemWow64DirectoryW';
 
+function QueryTokenInformation(AToken: THandle; AClass: Longint;
+  AInformation: Pointer; ALength: DWORD; out AReturned: DWORD): BOOL; stdcall;
+  external 'advapi32.dll' name 'GetTokenInformation';
+
+function QueryWow64Process(AProcess: THandle; out AIsWow64: BOOL): BOOL;
+  stdcall; external 'kernel32.dll' name 'IsWow64Process';
+
+type
+  TLocalTokenElevation = record
+    TokenIsElevated: DWORD;
+  end;
+
 const
+  TOKEN_ELEVATION_CLASS = 20;
   WM_SETTINGCHANGE_MESSAGE = $001A;
 
 function IsRunningAsAdmin: Boolean;
 var
   Token: THandle;
-  Elevation: TOKEN_ELEVATION;
+  Elevation: TLocalTokenElevation;
   Returned: DWORD;
 begin
   Result := False;
   Token := 0;
   if OpenProcessToken(GetCurrentProcess, TOKEN_QUERY, Token) then
     try
-      if GetTokenInformation(Token, TokenElevation, @Elevation,
+      if QueryTokenInformation(Token, TOKEN_ELEVATION_CLASS, @Elevation,
         SizeOf(Elevation), Returned) then
         Result := Elevation.TokenIsElevated <> 0;
     finally
@@ -174,7 +187,7 @@ begin
   L := CreateLogger;
   L.Debug('Resolvendo caminho para acesso ao sistema de arquivos: ' + APath);
   Result := APath;
-  if not IsWow64Process(GetCurrentProcess, IsWow) then
+  if not QueryWow64Process(GetCurrentProcess, IsWow) then
     RaiseLastOSError;
   if not IsWow or not IsAbsoluteFileSystemPath(APath) then
     Exit;
@@ -207,7 +220,7 @@ begin
     Exit;
   Translation := nil;
   if VerQueryValue(@Data[0], '\VarFileInfo\Translation', Pointer(Translation),
-    TransLen) and (TransLen >= SizeOf(LongInt)) then
+    TransLen) and (TransLen >= SizeOf(Longint)) then
     Query := Format('\StringFileInfo\%.4x%.4x\%s',
       [LoWord(Translation^), HiWord(Translation^), AName])
   else

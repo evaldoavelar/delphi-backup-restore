@@ -87,11 +87,21 @@ begin
   end;
 end;
 
+function JsonValue(O: TJSONObject; const N: string): TJSONValue;
+var
+  P: TJSONPair;
+begin
+  P := O.Get(N);
+  if P = nil then
+    Exit(nil);
+  Result := P.JsonValue;
+end;
+
 function SVal(O: TJSONObject; const N: string): string;
 var
   V: TJSONValue;
 begin
-  V := O.Values[N];
+  V := JsonValue(O, N);
   if not(V is TJSONString) then
     raise EDelphiBackupError.Create('Campo inválido: ' + N);
   Result := V.Value;
@@ -101,7 +111,7 @@ function Arr(O: TJSONObject; const N: string): TJSONArray;
 var
   V: TJSONValue;
 begin
-  V := O.Values[N];
+  V := JsonValue(O, N);
   if not(V is TJSONArray) then
     raise EDelphiBackupError.Create('Lista inválida: ' + N);
   Result := TJSONArray(V);
@@ -130,14 +140,14 @@ var
   A: TJSONArray;
   I: Integer;
 begin
-  if O.Values[AName] = nil then
+  if JsonValue(O, AName) = nil then
     Exit;
   A := Arr(O, AName);
-  for I := 0 to A.Count - 1 do
+  for I := 0 to A.Size - 1 do
   begin
-    if not (A.Items[I] is TJSONString) then
+    if not(A.Get(I) is TJSONString) then
       raise EDelphiBackupError.Create('Exclusão inválida: ' + AName);
-    AList.Add(A.Items[I].Value);
+    AList.Add(A.Get(I).Value);
   end;
 end;
 
@@ -161,6 +171,7 @@ begin
     O.AddPair('createdUtc', AManifest.CreatedUtc);
     O.AddPair('sourceUserProfile', AManifest.SourceUserProfile);
     O.AddPair('sourcePublicDir', AManifest.SourcePublicDir);
+    O.AddPair('sourceDocumentsDir', AManifest.SourceDocumentsDir);
     O.AddPair('userPath', AManifest.UserPath);
     if AManifest.HasExclusions then
     begin
@@ -240,9 +251,9 @@ begin
       TEncoding.UTF8));
     O := Obj(J);
     Result := TManifest.Create;
-    if not(O.Values['formatVersion'] is TJSONNumber) then
+    if not(JsonValue(O, 'formatVersion') is TJSONNumber) then
       raise EDelphiBackupError.Create('Versão do manifesto inválida.');
-    Result.FormatVersion := StrToInt(O.Values['formatVersion'].Value);
+    Result.FormatVersion := StrToInt(JsonValue(O, 'formatVersion').Value);
     if Result.FormatVersion <> MANIFEST_FORMAT_VERSION then
       raise EDelphiBackupError.Create('Versão do manifesto não suportada.');
     Result.ToolVersion := SVal(O, 'toolVersion');
@@ -250,15 +261,17 @@ begin
     Result.CreatedUtc := SVal(O, 'createdUtc');
     Result.SourceUserProfile := SVal(O, 'sourceUserProfile');
     Result.SourcePublicDir := SVal(O, 'sourcePublicDir');
+    if JsonValue(O, 'sourceDocumentsDir') <> nil then
+      Result.SourceDocumentsDir := SVal(O, 'sourceDocumentsDir');
     Result.UserPath := SVal(O, 'userPath');
-    Result.HasExclusions := (O.Values['excludeDirs'] <> nil) and
-      (O.Values['excludeFiles'] <> nil);
+    Result.HasExclusions := (JsonValue(O, 'excludeDirs') <> nil) and
+      (JsonValue(O, 'excludeFiles') <> nil);
     LoadStringList(O, 'excludeDirs', Result.ExcludeDirs);
     LoadStringList(O, 'excludeFiles', Result.ExcludeFiles);
     A := Arr(O, 'versions');
-    for I := 0 to A.Count - 1 do
+    for I := 0 to A.Size - 1 do
     begin
-      X := Obj(A.Items[I]);
+      X := Obj(A.Get(I));
       V := TManifestVersion.Create;
       Result.Versions.Add(V);
       V.BdsVersion := SVal(X, 'bdsVersion');
@@ -268,9 +281,9 @@ begin
       V.RootDir := SVal(X, 'rootDir');
     end;
     A := Arr(O, 'items');
-    for I := 0 to A.Count - 1 do
+    for I := 0 to A.Size - 1 do
     begin
-      X := Obj(A.Items[I]);
+      X := Obj(A.Get(I));
       M := TManifestItem.Create;
       Result.Items.Add(M);
       M.Item := TBackupItem.Create;
@@ -281,34 +294,34 @@ begin
       M.Item.Description := SVal(X, 'description');
       M.Item.Company := SVal(X, 'company');
       M.Item.FileVersion := SVal(X, 'fileVersion');
-      if not(X.Values['dllOrigin'] is TJSONNumber) then
+      if not(JsonValue(X, 'dllOrigin') is TJSONNumber) then
         raise EDelphiBackupError.Create('Origem de DLL inválida.');
-      N := StrToInt(X.Values['dllOrigin'].Value);
+      N := StrToInt(JsonValue(X, 'dllOrigin').Value);
       if (N < Ord(Low(TDllOrigin))) or (N > Ord(High(TDllOrigin))) then
         raise EDelphiBackupError.Create('Origem de DLL inválida.');
       M.Item.DllOrigin := TDllOrigin(N);
-      if not((X.Values['reinstalledByIde'] is TJSONTrue) or
-        (X.Values['reinstalledByIde'] is TJSONFalse)) then
+      if not((JsonValue(X, 'reinstalledByIde') is TJSONTrue) or
+        (JsonValue(X, 'reinstalledByIde') is TJSONFalse)) then
         raise EDelphiBackupError.Create('Indicador inválido.');
-      M.Item.ReinstalledByIde := X.Values['reinstalledByIde'] is TJSONTrue;
+      M.Item.ReinstalledByIde := JsonValue(X, 'reinstalledByIde') is TJSONTrue;
       M.Hash := SVal(X, 'hash');
       B := Arr(X, 'versions');
-      for K := 0 to B.Count - 1 do
+      for K := 0 to B.Size - 1 do
       begin
-        if not(B.Items[K] is TJSONString) then
+        if not(B.Get(K) is TJSONString) then
           raise EDelphiBackupError.Create('Versão inválida.');
-        M.Item.Versions.Add(B.Items[K].Value);
+        M.Item.Versions.Add(B.Get(K).Value);
       end;
       B := Arr(X, 'files');
-      for K := 0 to B.Count - 1 do
+      for K := 0 to B.Size - 1 do
       begin
-        Y := Obj(B.Items[K]);
+        Y := Obj(B.Get(K));
         F := TManifestFile.Create;
         M.Files.Add(F);
         F.RelPath := SVal(Y, 'relPath');
-        if not(Y.Values['size'] is TJSONNumber) then
+        if not(JsonValue(Y, 'size') is TJSONNumber) then
           raise EDelphiBackupError.Create('Tamanho inválido.');
-        F.Size := StrToInt64(Y.Values['size'].Value);
+        F.Size := StrToInt64(JsonValue(Y, 'size').Value);
         F.ModifiedUtc := SVal(Y, 'modifiedUtc');
       end;
     end;
@@ -577,6 +590,7 @@ begin
       TTimeZone.Local.ToUniversalTime(Now));
     Result.SourceUserProfile := GetUserProfileDir;
     Result.SourcePublicDir := GetPublicDir;
+    Result.SourceDocumentsDir := GetDocumentsDir;
     Result.UserPath := GetUserPathEnv;
     for V in AVersions do
     begin
