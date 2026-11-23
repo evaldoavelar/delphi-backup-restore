@@ -32,3 +32,6 @@ test-output/
 
 # editor settings
 .vscode/
+
+# oh-my-claudecode runtime state
+.omc/
