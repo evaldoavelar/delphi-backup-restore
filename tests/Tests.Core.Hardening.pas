@@ -38,6 +38,9 @@ type
 
 implementation
 
+function QueryWow64Process(AProcess: THandle; out AIsWow64: BOOL): BOOL;
+  stdcall; external 'kernel32.dll' name 'IsWow64Process';
+
 const
   TEST_KEY = 'Software\DelphiBackupRestoreTests\Hardening';
 
@@ -117,7 +120,7 @@ begin
   Sys32 := TPath.Combine(GetSystem32Dir, 'foo.dll');
   Other := 'C:\Program Files (x86)\Lib\foo.dll';
   Assert.AreEqual(Other, RealFileSystemPath(Other));
-  Assert.IsTrue(IsWow64Process(GetCurrentProcess, IsWow));
+  Assert.IsTrue(QueryWow64Process(GetCurrentProcess, IsWow));
   if IsWow then
     Assert.AreEqual(TPath.Combine(ExtractFileDir(GetSystem32Dir),
       'Sysnative\foo.dll'), RealFileSystemPath(Sys32), True)

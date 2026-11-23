@@ -4,6 +4,7 @@
 
 uses
   System.SysUtils,
+  Winapi.Windows,
   DUnitX.TestFramework,
   DUnitX.Loggers.Console,
   DUnitX.Loggers.Xml.NUnit,
@@ -16,7 +17,8 @@ uses
   Tests.Core.Manifest in 'Tests.Core.Manifest.pas',
   Tests.Core.CompareEngine in 'Tests.Core.CompareEngine.pas',
   Tests.Core.Safety in 'Tests.Core.Safety.pas',
-  Tests.Core.Hardening in 'Tests.Core.Hardening.pas';
+  Tests.Core.Hardening in 'Tests.Core.Hardening.pas',
+  Tests.Core.Round3 in 'Tests.Core.Round3.pas';
 
 var
   Runner: ITestRunner;
@@ -25,6 +27,12 @@ var
   NUnitLogger: ITestLogger;
 
 begin
+  if (ParamCount = 1) and (ParamStr(1) = '--round3-pipe-child') then
+  begin
+    Sleep(250);
+    Writeln('grandchild output');
+    Exit;
+  end;
   try
     TDUnitX.CheckCommandLine;
     Runner := TDUnitX.CreateRunner;

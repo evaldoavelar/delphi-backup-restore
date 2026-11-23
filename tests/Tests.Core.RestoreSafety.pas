@@ -7,25 +7,26 @@ uses
   Core.RestoreEngine;
 
 type
-  [TestFixture]
-  TTestRestoreSafety = class
-  private type
+  TRestoreTestContext = class
+  protected type
     TTestRunner = class(TInterfacedObject, IProcessRunner)
     public
       Calls: TStringList;
       TreeDirs: TStringList;
       TreeFiles: TStringList;
-      TreeMirror: Boolean;
-      RegistryValue: string;
+      TreeMirror, FailTrees: Boolean;
+      RegistryValue, ImportedText: string;
       ImportFailure: Integer;
       Extracted: string;
       ZipManifest: string;
       UnzipFails: Boolean;
       ZipFolderName: string;
-      ZipWrongName: Boolean;
+      ZipWrongName, ZipDiagnostic: Boolean;
+      ZipListArgs: string;
       constructor Create;
       destructor Destroy; override;
-      function Run(const AExe, AArgs, AWorkDir: string; out AOutput: string): Cardinal;
+      function Run(const AExe, AArgs, AWorkDir: string; out AOutput: string)
+        : Cardinal;
       function CopyTree(const ASource, ADest: string; AMirror: Boolean;
         AExcludeDirs, AExcludeFiles: TStrings): Boolean;
       function CopyFile(const ASourceFile, ADestDir: string): Boolean;
@@ -36,11 +37,15 @@ type
       function ZipFolder(const AFolder, AZipFile: string): Boolean;
       function UnzipTo(const AZipFile, ADestFolder: string): Boolean;
     end;
+
     TTestRestoreEngine = class(TRestoreEngine)
     protected
       procedure CheckHostRequirements; override;
+      procedure MergeUserPath; override;
+    public
+      MergeCalls: Integer;
     end;
-  private
+  protected
     FTemp, FBackup: string;
     FInstalled: TDelphiVersionList;
     FVersion: TDelphiVersion;
@@ -48,7 +53,7 @@ type
     FLogger: ILogger;
     FRunner: IProcessRunner;
     FFake: TTestRunner;
-    FEngine: TRestoreEngine;
+    FEngine: TTestRestoreEngine;
     FOptions: TRestoreOptions;
     FTemps, FMessages: TStringList;
     function AddItem(const AId: string; AKind: TItemKind;
@@ -56,14 +61,20 @@ type
     function AddRegistryFixture(const AExtraSection: string = ''): string;
     procedure OpenBackup;
     procedure Execute;
-    procedure CheckRollback(AFailure: Integer; AKeyExists: Boolean);
-    procedure CheckZipVerification(AWrongName: Boolean);
     function PrepareZip: string;
   public
     [Setup]
     procedure Setup;
     [TearDown]
     procedure TearDown;
+  end;
+
+  [TestFixture]
+  TTestRestoreSafety = class(TRestoreTestContext)
+  private
+    procedure CheckRollback(AFailure: Integer; AKeyExists: Boolean);
+    procedure CheckZipVerification(AWrongName: Boolean);
+  public
     [Test]
     procedure PrecheckAggregatesResolvedDestinationViolations;
     [Test]
@@ -113,7 +124,7 @@ const
   RegHeader = 'Windows Registry Editor Version 5.00' + sLineBreak + sLineBreak;
   TempMessage = 'Exportações de segurança do registro: ';
 
-constructor TTestRestoreSafety.TTestRunner.Create;
+constructor TRestoreTestContext.TTestRunner.Create;
 begin
   inherited;
   Calls := TStringList.Create;
@@ -121,7 +132,7 @@ begin
   TreeFiles := TStringList.Create;
 end;
 
-destructor TTestRestoreSafety.TTestRunner.Destroy;
+destructor TRestoreTestContext.TTestRunner.Destroy;
 begin
   TreeFiles.Free;
   TreeDirs.Free;
@@ -129,38 +140,42 @@ begin
   inherited;
 end;
 
-function TTestRestoreSafety.TTestRunner.Run(const AExe, AArgs, AWorkDir: string;
-  out AOutput: string): Cardinal;
+function TRestoreTestContext.TTestRunner.Run(const AExe, AArgs,
+  AWorkDir: string; out AOutput: string): Cardinal;
 begin
   Assert.AreEqual('tar.exe', AExe);
   Assert.IsTrue(StartsText('-t -f ', AArgs));
+  ZipListArgs := AArgs;
   AOutput := UpperCase(ZipFolderName) + '/' + sLineBreak +
     UpperCase(ZipFolderName) + '/MANIFEST.JSON' + sLineBreak;
   if ZipWrongName then
     AOutput := AOutput + ZipFolderName + '/wrong.log' + sLineBreak
   else
     AOutput := AOutput + ZipFolderName + '/backup.log' + sLineBreak;
+  if ZipDiagnostic then
+    AOutput := AOutput + 'tar: simulação de diagnóstico' + sLineBreak;
   Result := 0;
 end;
 
-function TTestRestoreSafety.TTestRunner.CopyTree(const ASource, ADest: string;
+function TRestoreTestContext.TTestRunner.CopyTree(const ASource, ADest: string;
   AMirror: Boolean; AExcludeDirs, AExcludeFiles: TStrings): Boolean;
 begin
   Calls.Add('tree');
   TreeMirror := AMirror;
   TreeDirs.Assign(AExcludeDirs);
   TreeFiles.Assign(AExcludeFiles);
-  Result := True;
+  Result := not FailTrees;
 end;
 
-function TTestRestoreSafety.TTestRunner.CopyFile(const ASourceFile,
+function TRestoreTestContext.TTestRunner.CopyFile(const ASourceFile,
   ADestDir: string): Boolean;
 begin
   Calls.Add('file');
   Result := True;
 end;
 
-function TTestRestoreSafety.TTestRunner.RegExport(const AKey, AFileName: string): Boolean;
+function TRestoreTestContext.TTestRunner.RegExport(const AKey,
+  AFileName: string): Boolean;
 begin
   Assert.AreEqual(TestKey, AKey);
   Calls.Add('export');
@@ -168,25 +183,27 @@ begin
   Result := True;
 end;
 
-function TTestRestoreSafety.TTestRunner.RegImport(const AFileName: string;
+function TRestoreTestContext.TTestRunner.RegImport(const AFileName: string;
   AHklm32: Boolean): Boolean;
 begin
   Assert.IsFalse(AHklm32);
   if StartsText('before_', ExtractFileName(AFileName)) then
   begin
     Calls.Add('rollback');
-    Assert.AreEqual('', RegistryValue, 'A chave parcial deve ser removida primeiro.');
+    Assert.AreEqual('', RegistryValue,
+      'A chave parcial deve ser removida primeiro.');
     RegistryValue := TFile.ReadAllText(AFileName, TEncoding.Unicode);
     Exit(True);
   end;
   Calls.Add('import');
+  ImportedText := TFile.ReadAllText(AFileName, TEncoding.Unicode);
   RegistryValue := 'partial';
   if ImportFailure = 2 then
     raise EDelphiBackupError.Create('Falha simulada em reg import.');
   Result := ImportFailure = 0;
 end;
 
-function TTestRestoreSafety.TTestRunner.RegDelete(const AKey: string): Boolean;
+function TRestoreTestContext.TTestRunner.RegDelete(const AKey: string): Boolean;
 begin
   Assert.AreEqual(TestKey, AKey);
   Calls.Add('delete');
@@ -194,33 +211,42 @@ begin
   Result := True;
 end;
 
-function TTestRestoreSafety.TTestRunner.RegKeyExists(const AKey: string): Boolean;
+function TRestoreTestContext.TTestRunner.RegKeyExists
+  (const AKey: string): Boolean;
 begin
   Result := SameText(AKey, TestKey) and (RegistryValue <> '');
 end;
 
-function TTestRestoreSafety.TTestRunner.ZipFolder(const AFolder, AZipFile: string): Boolean;
+function TRestoreTestContext.TTestRunner.ZipFolder(const AFolder,
+  AZipFile: string): Boolean;
 begin
   ZipFolderName := ExtractFileName(AFolder);
   TFile.WriteAllText(AZipFile, 'zip simulado');
   Result := True;
 end;
 
-function TTestRestoreSafety.TTestRunner.UnzipTo(const AZipFile, ADestFolder: string): Boolean;
+function TRestoreTestContext.TTestRunner.UnzipTo(const AZipFile,
+  ADestFolder: string): Boolean;
 begin
   Extracted := ADestFolder;
   ForceDirectories(TPath.Combine(Extracted, 'backup'));
   if ZipManifest <> '' then
-    TFile.Copy(ZipManifest, TPath.Combine(Extracted, 'backup\' + BACKUP_MANIFEST_FILE));
+    TFile.Copy(ZipManifest, TPath.Combine(Extracted,
+      'backup\' + BACKUP_MANIFEST_FILE));
   Result := not UnzipFails;
 end;
 
-procedure TTestRestoreSafety.TTestRestoreEngine.CheckHostRequirements;
+procedure TRestoreTestContext.TTestRestoreEngine.CheckHostRequirements;
 begin
   { The simulated restore uses only a fake runner and temporary files. }
 end;
 
-procedure TTestRestoreSafety.Setup;
+procedure TRestoreTestContext.TTestRestoreEngine.MergeUserPath;
+begin
+  Inc(MergeCalls);
+end;
+
+procedure TRestoreTestContext.Setup;
 var
   V: TManifestVersion;
 begin
@@ -230,8 +256,7 @@ begin
   FTemps := TStringList.Create;
   FMessages := TStringList.Create;
   FLogger := CreateLogger;
-  FLogger.AddSink(
-    procedure(ALevel: TLogLevel; const AMessage: string)
+  FLogger.AddSink(procedure(ALevel: TLogLevel; const AMessage: string)
     begin
       FMessages.Add(AMessage);
       if StartsText(TempMessage, AMessage) then
@@ -256,11 +281,11 @@ begin
   V.BdsVersion := FVersion.BdsVersion;
   V.ProductName := 'Delphi 11 Alexandria';
   FManifest.Versions.Add(V);
-  FOptions := Default(TRestoreOptions);
+  FOptions := Default (TRestoreOptions);
   FOptions.Categories := AllCategories;
 end;
 
-procedure TTestRestoreSafety.TearDown;
+procedure TRestoreTestContext.TearDown;
 var
   P: string;
 begin
@@ -279,8 +304,8 @@ begin
   end;
 end;
 
-function TTestRestoreSafety.AddItem(const AId: string; AKind: TItemKind;
-  ACategory: TItemCategory; const ADest: string): TBackupItem;
+function TRestoreTestContext.AddItem(const AId: string; AKind: TItemKind;
+ACategory: TItemCategory; const ADest: string): TBackupItem;
 var
   M: TManifestItem;
 begin
@@ -294,7 +319,8 @@ begin
   Result.SourcePath := ADest;
 end;
 
-function TTestRestoreSafety.AddRegistryFixture(const AExtraSection: string): string;
+function TRestoreTestContext.AddRegistryFixture(const AExtraSection
+  : string): string;
 begin
   AddItem('r001', ikRegistry, icExtra, TestKey);
   ForceDirectories(TPath.Combine(FBackup, BACKUP_REGISTRY_DIR));
@@ -303,13 +329,13 @@ begin
     '"Name"="Value"' + sLineBreak + AExtraSection, TEncoding.Unicode);
 end;
 
-procedure TTestRestoreSafety.OpenBackup;
+procedure TRestoreTestContext.OpenBackup;
 begin
   SaveManifest(FManifest, TPath.Combine(FBackup, BACKUP_MANIFEST_FILE));
   FEngine.Open(FBackup);
 end;
 
-procedure TTestRestoreSafety.Execute;
+procedure TRestoreTestContext.Execute;
 begin
   FEngine.Execute(FOptions, FInstalled, nil);
 end;
@@ -329,7 +355,8 @@ begin
   AddItem('r002', ikRegistry, icExtra, 'HKCU\Software\Microsoft\Example');
   AddItem('r003', ikRegistry, icExtra, 'HKCU\Software');
   AddItem('r004', ikRegistry, icExtra, 'HKCR\Software\Delphi\Example');
-  AddItem('r005', ikRegistry, icExtra, 'HKLM\SOFTWARE\WOW6432Node\Borland\Delphi');
+  AddItem('r005', ikRegistry, icExtra,
+    'HKLM\SOFTWARE\WOW6432Node\Borland\Delphi');
   AddItem('f006', ikFolder, icIdeConfig, FVersion.UserDir);
   AddItem('f007', ikFolder, icComponents, 'out-of-scope').Versions.Add('99.0');
   AddItem('f008', ikFolder, icComponents, TPath.GetPathRoot(FTemp));
@@ -353,11 +380,14 @@ begin
   Assert.AreEqual(0, FTemps.Count);
 end;
 
-procedure TTestRestoreSafety.PrecheckAcceptsListedIdeFolderAndAllowedRegistryKeys;
+procedure TTestRestoreSafety.
+  PrecheckAcceptsListedIdeFolderAndAllowedRegistryKeys;
 begin
   AddItem('f001', ikFolder, icIdeConfig, FVersion.UserDir).Versions.Add('22.0');
-  AddItem('r001', ikRegistry, icIdeConfig, 'HKCU\Software\CodeGear\BDS\6.0');
-  AddItem('r002', ikRegistry, icIdeConfig, 'HKCU\Software\Borland\Delphi\7.0');
+  AddItem('r001', ikRegistry, icIdeConfig,
+    'HKCU\Software\Embarcadero\BDS\22.0');
+  AddItem('r002', ikRegistry, icIdeConfig,
+    'HKLM\Software\Embarcadero\BDS\22.0');
   AddItem('r003', ikRegistry, icExperts, 'HKCU\Software\GExperts');
   AddItem('r004', ikRegistry, icExperts, 'HKCU\Software\CnPack\Settings');
   AddItem('r005', ikRegistry, icExperts, 'HKCU\Software\Scooter Software');
@@ -367,13 +397,13 @@ begin
   Assert.AreEqual(0, FFake.Calls.Count);
 end;
 
-procedure TTestRestoreSafety.PrecheckRejectsDestinationInExtractionOutsideBackupRoot;
+procedure TTestRestoreSafety.
+  PrecheckRejectsDestinationInExtractionOutsideBackupRoot;
 begin
   FEngine.Open(PrepareZip);
   AddItem('f001', ikFolder, icExtra, TPath.Combine(FFake.Extracted, 'sibling'));
   FEngine.Manifest.Items.Add(FManifest.Items.Extract(FManifest.Items[0]));
-  Assert.WillRaise(
-    procedure
+  Assert.WillRaise(procedure
     begin
       FEngine.Precheck(FOptions, FInstalled);
     end, EPrecheckError);
@@ -390,11 +420,13 @@ begin
     AddRegistryFixture('  ' + Header + sLineBreak);
     OpenBackup;
     Assert.WillRaise(Execute, EDelphiBackupError);
-    Assert.AreEqual('', FFake.Calls.Text, 'Nenhuma chave pode ser excluída ou importada.');
+    Assert.AreEqual('', FFake.Calls.Text,
+      'Nenhuma chave pode ser excluída ou importada.');
   end;
 end;
 
-procedure TTestRestoreSafety.CheckRollback(AFailure: Integer; AKeyExists: Boolean);
+procedure TTestRestoreSafety.CheckRollback(AFailure: Integer;
+AKeyExists: Boolean);
 begin
   AddRegistryFixture('[-' + TestFullKey + '\Obsolete]' + sLineBreak);
   if AKeyExists then
@@ -404,7 +436,8 @@ begin
   Assert.WillRaise(Execute, EDelphiBackupError);
   if AKeyExists then
   begin
-    Assert.AreEqual('export,delete,import,delete,rollback', FFake.Calls.CommaText);
+    Assert.AreEqual('export,delete,import,delete,rollback',
+      FFake.Calls.CommaText);
     Assert.AreEqual('original', FFake.RegistryValue);
   end
   else
@@ -433,9 +466,12 @@ procedure TTestRestoreSafety.InstallerKeysAreSkipped;
 var
   M: TManifestItem;
 begin
-  AddItem('r001', ikRegistry, icIdeConfig, 'HKLM\SOFTWARE\Embarcadero\BDS\22.0');
-  AddItem('r002', ikRegistry, icIdeConfig, 'HKLM\SOFTWARE\WOW6432Node\Borland\Delphi\7.0');
-  AddItem('r003', ikRegistry, icIdeConfig, 'HKLM\SOFTWARE\CodeGear\BDS\6.0\Child');
+  AddItem('r001', ikRegistry, icIdeConfig,
+    'HKLM\SOFTWARE\Embarcadero\BDS\22.0');
+  AddItem('r002', ikRegistry, icIdeConfig,
+    'HKLM\SOFTWARE\WOW6432Node\Borland\Delphi\7.0');
+  AddItem('r003', ikRegistry, icIdeConfig,
+    'HKLM\SOFTWARE\CodeGear\BDS\6.0\Child');
   OpenBackup;
   Execute;
   Assert.AreEqual('', FFake.Calls.Text);
@@ -481,8 +517,8 @@ begin
   FManifest.ExcludeDirs.Add('private-*');
   FManifest.ExcludeFiles.Add('*.local');
   Runner := CreateProcessRunner(FLogger);
-  Assert.IsTrue(Runner.CopyTree(Source, Dest, True,
-    FManifest.ExcludeDirs, FManifest.ExcludeFiles));
+  Assert.IsTrue(Runner.CopyTree(Source, Dest, True, FManifest.ExcludeDirs,
+    FManifest.ExcludeFiles));
   Assert.IsTrue(TFile.Exists(KeptDir));
   Assert.IsTrue(TFile.Exists(KeptFile));
   Assert.IsFalse(TFile.Exists(Removed));
@@ -505,7 +541,7 @@ begin
   FManifest.ExcludeDirs.Add('skip-*');
   FManifest.ExcludeFiles.Add('*.file');
   OpenBackup;
-  Options := Default(TCompareOptions);
+  Options := Default (TCompareOptions);
   Options.Source := FBackup;
   Config := TToolConfig.Create;
   Compare := TCompareEngine.Create(FLogger, FRunner);
@@ -651,7 +687,7 @@ var
   Zip, Folder: string;
   Manifest: TManifest;
 begin
-  Options := Default(TBackupOptions);
+  Options := Default (TBackupOptions);
   Options.Destination := FTemp;
   Options.CreateZip := True;
   Options.Categories := AllCategories;
@@ -693,7 +729,7 @@ begin
   CheckZipVerification(False);
 end;
 
-function TTestRestoreSafety.PrepareZip: string;
+function TRestoreTestContext.PrepareZip: string;
 begin
   FFake.ZipManifest := TPath.Combine(FBackup, BACKUP_MANIFEST_FILE);
   SaveManifest(FManifest, FFake.ZipManifest);
@@ -713,8 +749,7 @@ begin
   Assert.IsFalse(DirectoryExists(Extracted));
   Extracted := FFake.Extracted;
   FFake.UnzipFails := True;
-  Assert.WillRaise(
-    procedure
+  Assert.WillRaise(procedure
     begin
       FEngine.Open(Zip);
     end, EDelphiBackupError);
@@ -730,7 +765,7 @@ var
   Options: TCompareOptions;
   Diff: TCompareResult;
 begin
-  Options := Default(TCompareOptions);
+  Options := Default (TCompareOptions);
   Options.Source := PrepareZip;
   Engine := TCompareEngine.Create(FLogger, FRunner);
   try
@@ -738,8 +773,7 @@ begin
     Diff.Free;
     Assert.IsFalse(DirectoryExists(FFake.Extracted));
     FFake.UnzipFails := True;
-    Assert.WillRaise(
-      procedure
+    Assert.WillRaise(procedure
       begin
         Engine.Execute(Options, FInstalled, nil).Free;
       end, EDelphiBackupError);

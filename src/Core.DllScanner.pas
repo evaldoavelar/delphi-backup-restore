@@ -27,12 +27,13 @@ type
     FHeaderSize: Cardinal;
     FImageBase: UInt64;
     FIs64: Boolean;
+    FMachine: Word;
     procedure Check(AOffset, ACount: Int64);
     function U16(AOffset: Int64): Word;
     function U32(AOffset: Int64): Cardinal;
     function U64(AOffset: Int64): UInt64;
     function NtHeaderOffset: Int64;
-    function MapRva(ARva: Cardinal; ASize: Cardinal): Int64;
+    function MapRva(ARva: Cardinal; out AAvailable: Int64): Int64;
     function ImportName(ARva: Cardinal): string;
     procedure ReadDirectory(ARva, ASize: Cardinal; ADelay: Boolean;
       AImports: TStrings);
@@ -66,10 +67,68 @@ type
       AResult: TBackupItemList);
   end;
 
+function DisableWow64Redirection(out AOldValue: Pointer): BOOL; stdcall;
+  external 'kernel32.dll' name 'Wow64DisableWow64FsRedirection';
+
+function RevertWow64Redirection(AOldValue: Pointer): BOOL; stdcall;
+  external 'kernel32.dll' name 'Wow64RevertWow64FsRedirection';
+
+function BeginNativeFileCall(const APath: string; out APhysicalPath: string;
+  out AOldValue: Pointer): Boolean;
+begin
+  APhysicalPath := RealFileSystemPath(APath);
+  Result := not SameText(APath, APhysicalPath) and
+    DisableWow64Redirection(AOldValue);
+  if Result then
+    APhysicalPath := APath;
+end;
+
+function NativeFileExists(const APath: string): Boolean;
+var
+  PhysicalPath: string;
+  OldValue: Pointer;
+  Disabled: Boolean;
+begin
+  Disabled := BeginNativeFileCall(APath, PhysicalPath, OldValue);
+  try
+    Result := FileExists(PhysicalPath);
+  finally
+    if Disabled then
+      RevertWow64Redirection(OldValue);
+  end;
+end;
+
+function NativeFindFirst(const ADirectory: string;
+  out ASearch: TSearchRec): Integer;
+var
+  PhysicalPath: string;
+  OldValue: Pointer;
+  Disabled: Boolean;
+begin
+  Disabled := BeginNativeFileCall(ADirectory, PhysicalPath, OldValue);
+  try
+    Result := FindFirst(IncludeTrailingPathDelimiter(PhysicalPath) + '*',
+      faAnyFile, ASearch);
+  finally
+    if Disabled then
+      RevertWow64Redirection(OldValue);
+  end;
+end;
+
 constructor TPeReader.Create(const AFileName: string);
+var
+  PhysicalPath: string;
+  OldValue: Pointer;
+  Disabled: Boolean;
 begin
   inherited Create;
-  FStream := TFileStream.Create(AFileName, fmOpenRead or fmShareDenyNone);
+  Disabled := BeginNativeFileCall(AFileName, PhysicalPath, OldValue);
+  try
+    FStream := TFileStream.Create(PhysicalPath, fmOpenRead or fmShareDenyNone);
+  finally
+    if Disabled then
+      RevertWow64Redirection(OldValue);
+  end;
 end;
 
 destructor TPeReader.Destroy;
@@ -106,42 +165,41 @@ begin
   FStream.ReadBuffer(Result, SizeOf(Result));
 end;
 
-function TPeReader.MapRva(ARva, ASize: Cardinal): Int64;
+function TPeReader.MapRva(ARva: Cardinal; out AAvailable: Int64): Int64;
 var
   S: TPeSection;
-  Delta: UInt64;
+  Delta: Int64;
 begin
-  if (ARva < FHeaderSize) and (UInt64(ARva) + ASize <= FHeaderSize) then
+  if ARva < FHeaderSize then
   begin
-    Check(ARva, ASize);
+    AAvailable := Int64(FHeaderSize) - ARva;
     Exit(ARva);
   end;
   for S in FSections do
-    if ARva >= S.Rva then
+  begin
+    Delta := Int64(ARva) - S.Rva;
+    if (Delta >= 0) and (Delta < S.RawSize) then
     begin
-      Delta := UInt64(ARva) - S.Rva;
-      if (Delta < S.RawSize) and (Delta + ASize <= S.RawSize) then
-      begin
-        Result := Int64(S.RawOffset) + Int64(Delta);
-        Check(Result, ASize);
-        Exit;
-      end;
+      AAvailable := Int64(S.RawSize) - Delta;
+      Exit(Int64(S.RawOffset) + Delta);
     end;
+  end;
   raise EReadError.Create
     ('RVA do PE não corresponde a dados presentes no arquivo.');
 end;
 
 function TPeReader.ImportName(ARva: Cardinal): string;
 var
+  Available: Int64;
   I: Integer;
   B: Byte;
 begin
   Result := '';
-  for I := 0 to 4095 do
+  FStream.Position := MapRva(ARva, Available);
+  if Available > 4096 then
+    Available := 4096;
+  for I := 1 to Integer(Available) do
   begin
-    if UInt64(ARva) + Cardinal(I) > High(Cardinal) then
-      raise EReadError.Create('Nome de importação excede o espaço de RVAs.');
-    FStream.Position := MapRva(ARva + Cardinal(I), 1);
     FStream.ReadBuffer(B, 1);
     if B = 0 then
     begin
@@ -160,7 +218,7 @@ procedure TPeReader.ReadDirectory(ARva, ASize: Cardinal; ADelay: Boolean;
   AImports: TStrings);
 var
   Step, Position, NameRva, Attrs: Cardinal;
-  Offset: Int64;
+  Offset, Available: Int64;
   I: Integer;
   Zero: Boolean;
   VA: UInt64;
@@ -173,10 +231,12 @@ begin
     Step := 32;
   if (ASize < Step) or (UInt64(ARva) + ASize > UInt64(High(Cardinal)) + 1) then
     raise EReadError.Create('Tamanho inválido do diretório de importações.');
+  Offset := MapRva(ARva, Available);
+  if Available > ASize then
+    Available := ASize;
   Position := 0;
-  while (UInt64(Position) + Step <= ASize) and (Position div Step < 65536) do
+  while (Int64(Position) + Step <= Available) and (Position div Step < 65536) do
   begin
-    Offset := MapRva(ARva + Position, Step);
     Zero := True;
     for I := 0 to (Step div 4) - 1 do
       if U32(Offset + I * 4) <> 0 then
@@ -201,9 +261,10 @@ begin
     if NameRva = 0 then
       raise EReadError.Create('Importação sem nome de DLL.');
     Name := ImportName(NameRva);
-    if AImports.IndexOf(Name) < 0 then
+    if (AImports <> nil) and (AImports.IndexOf(Name) < 0) then
       AImports.Add(Name);
     Inc(Position, Step);
+    Inc(Offset, Step);
   end;
   raise EReadError.Create('Diretório de importações sem descritor terminador.');
 end;
@@ -228,6 +289,7 @@ var
   I: Integer;
 begin
   Nt := NtHeaderOffset;
+  FMachine := U16(Nt + 4);
   Count := U16(Nt + 6);
   if (Count = 0) or (Count > 4096) then
     raise EReadError.Create('Número de seções PE inválido.');
@@ -339,14 +401,16 @@ begin
   try
     Reader := TPeReader.Create(AFileName);
     try
-      Result := Reader.U16(Reader.NtHeaderOffset + 4);
+      Reader.ReadImports(nil);
+      Result := Reader.FMachine;
       L.Debug('Arquitetura PE: ' + IntToHex(Result, 4));
     finally
       Reader.Free;
     end;
   except
     on E: Exception do
-      L.Warn('Não foi possível ler a arquitetura PE de ' + AFileName + ': ' + E.Message);
+      L.Warn('Não foi possível ler a arquitetura PE de ' + AFileName + ': ' +
+        E.Message);
   end;
 end;
 
@@ -402,10 +466,9 @@ var
   Path, Ext: string;
   Code: Integer;
 begin
-  if not DirectoryExists(ADirectory) then
+  if not DirectoryExists(RealFileSystemPath(ADirectory)) then
     Exit;
-  Code := FindFirst(IncludeTrailingPathDelimiter(ADirectory) + '*',
-    faAnyFile, Search);
+  Code := NativeFindFirst(ADirectory, Search);
   if Code <> 0 then
   begin
     if Code <> ERROR_FILE_NOT_FOUND then
@@ -463,20 +526,20 @@ begin
     (Pos('/', AName) > 0) or (AName = '.') or (AName = '..') then
     Exit;
   Candidate := TPath.Combine(ExtractFileDir(AParentFile), AName);
-  if FileExists(RealFileSystemPath(Candidate)) then
+  if NativeFileExists(Candidate) then
     Exit(Candidate);
   Dir := GetSystem32Dir;
   if not AIs64 and (GetSysWow64Dir <> '') then
     Dir := GetSysWow64Dir;
   Candidate := TPath.Combine(Dir, AName);
-  if FileExists(RealFileSystemPath(Candidate)) then
+  if NativeFileExists(Candidate) then
     Exit(Candidate);
   for Dir in FSearchDirs do
   begin
     if FSystemDirs.IndexOf(ExcludeTrailingPathDelimiter(Dir)) >= 0 then
       Continue;
     Candidate := TPath.Combine(Dir, AName);
-    if FileExists(RealFileSystemPath(Candidate)) then
+    if NativeFileExists(Candidate) then
       Exit(Candidate);
   end;
 end;
@@ -538,7 +601,7 @@ begin
   FVisited.Add(AFileName);
   Imports := TStringList.Create;
   try
-    if not ReadPeImportsLogged(RealFileSystemPath(AFileName), Imports, FLogger, Is64) then
+    if not ReadPeImportsLogged(AFileName, Imports, FLogger, Is64) then
       Exit;
     for Name in Imports do
     begin
@@ -570,14 +633,12 @@ procedure TDllScanner.ScanSystemDirectory(const ADirectory: string);
 var
   Search: TSearchRec;
   Code: Integer;
-  Ext, PhysicalDir: string;
+  Ext: string;
 begin
-  PhysicalDir := RealFileSystemPath(ADirectory);
-  if not DirectoryExists(PhysicalDir) then
+  if not DirectoryExists(RealFileSystemPath(ADirectory)) then
     Exit;
   FLogger.Info('Procurando DLLs de terceiros em ' + ADirectory);
-  Code := FindFirst(IncludeTrailingPathDelimiter(PhysicalDir) + '*',
-    faAnyFile, Search);
+  Code := NativeFindFirst(ADirectory, Search);
   if Code <> 0 then
   begin
     FLogger.Warn('Não foi possível listar pasta de sistema: ' + ADirectory +
@@ -640,7 +701,7 @@ begin
         begin
           Dir := ExpandEnvVars(StringReplace(Trim(PathEntry), '"', '',
             [rfReplaceAll]));
-          if (Dir <> '') and DirectoryExists(Dir) then
+          if (Dir <> '') and DirectoryExists(RealFileSystemPath(Dir)) then
             FSearchDirs.Add(Dir);
         end;
       finally
@@ -653,7 +714,7 @@ begin
               ikFolder:
                 CollectFiles(Item.SourcePath, True, True);
               ikFile:
-                if FileExists(RealFileSystemPath(Item.SourcePath)) then
+                if NativeFileExists(Item.SourcePath) then
                 begin
                   FFiles.Add(Item.SourcePath);
                   FCoveredNames.Add(ExtractFileName(Item.SourcePath));
