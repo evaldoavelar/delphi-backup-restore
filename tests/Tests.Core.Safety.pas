@@ -52,6 +52,10 @@ type
     procedure TestCountAndDeleteTreeWithLongPaths;
     [Test]
     procedure TestComponentRootBelowDriveRoot;
+    [Test]
+    procedure TestSelectComponentRoots;
+    [Test]
+    procedure TestAdditionalContainers;
   end;
 
 implementation
@@ -173,6 +177,86 @@ begin
   Result := FTemp + '\lib';
   for I := 1 to 12 do
     Result := Result + '\nivel_de_pasta_bem_comprido_' + IntToStr(I);
+end;
+
+procedure TTestCoreSafety.TestSelectComponentRoots;
+var
+  Safety: TPathSafety;
+  Candidates, Roots: TStringList;
+  A, B, Repo: string;
+  V: TDelphiVersion;
+begin
+  A := FTemp + '\Dev\Libs\A\src';
+  B := FTemp + '\Dev\Libs\B\lib';
+  MakeDir(A);
+  MakeDir(B);
+  Candidates := TStringList.Create;
+  Roots := TStringList.Create;
+  V := TDelphiVersion.Create;
+  V.RootDir := FTemp + '\OtherIDE';
+  FVersions.Add(V);
+  Safety := TPathSafety.Create(FVersions);
+  try
+    Candidates.Add(A);
+    Assert.AreEqual(1, Safety.SelectComponentRoots(Candidates, Roots));
+    Assert.AreEqual(A, Roots[0], 'single folder');
+    Candidates.Add(B);
+    Assert.AreEqual(1, Safety.SelectComponentRoots(Candidates, Roots));
+    Assert.AreEqual(FTemp + '\Dev\Libs', Roots[0], 'common ancestor');
+    Repo := FTemp + '\Dev';
+    MakeDir(Repo + '\.svn');
+    MakeDir(FTemp + '\Dev\Libs\A\.git');
+    Assert.AreEqual(1, Safety.SelectComponentRoots(Candidates, Roots));
+    Assert.AreEqual(Repo, Roots[0], 'highest VCS root');
+  finally
+    Safety.Free;
+    Roots.Free;
+    Candidates.Free;
+  end;
+  V := TDelphiVersion.Create;
+  V.RootDir := FTemp + '\Dev\Libs\OtherIDE';
+  FVersions.Add(V);
+  Safety := TPathSafety.Create(FVersions);
+  Candidates := TStringList.Create;
+  Roots := TStringList.Create;
+  try
+    Candidates.Add(B);
+    Assert.AreEqual(1, Safety.SelectComponentRoots(Candidates, Roots));
+    Assert.AreEqual(B, Roots[0], 'protected ancestor stops VCS climb');
+  finally
+    Roots.Free;
+    Candidates.Free;
+    Safety.Free;
+  end;
+end;
+
+procedure TTestCoreSafety.TestAdditionalContainers;
+var
+  Safety: TPathSafety;
+  Names: array [0 .. 5] of string;
+  I: Integer;
+  P: string;
+begin
+  Names[0] := 'OneDrive';
+  Names[1] := 'OneDriveCommercial';
+  Names[2] := 'OneDriveConsumer';
+  Names[3] := 'CommonProgramFiles';
+  Names[4] := 'CommonProgramFiles(x86)';
+  Names[5] := 'CommonProgramW6432';
+  Safety := TPathSafety.Create(nil);
+  try
+    P := GetUserProfileDir;
+    if P <> '' then
+      Assert.IsTrue(Safety.IsContainer(P + '\Downloads'));
+    for I := Low(Names) to High(Names) do
+    begin
+      P := GetEnvironmentVariable(Names[I]);
+      if P <> '' then
+        Assert.IsTrue(Safety.IsContainer(P), Names[I]);
+    end;
+  finally
+    Safety.Free;
+  end;
 end;
 
 procedure TTestCoreSafety.TestSystemFoldersAreContainers;
