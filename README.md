@@ -2,7 +2,7 @@
 
 Ferramenta pública VCL de código aberto para Windows (com interface gráfica e de linha de comando) dedicada ao backup e à restauração completos de ambientes de desenvolvimento Embarcadero Delphi.
 
----
+
 
 ## Objetivo
 
@@ -348,24 +348,7 @@ flowchart LR
   - Disparado em merges na branch `main`.
   - Compila e testa os dois executáveis, gera pacote `.zip`, calcula `SHA256SUMS`, extrai notas de versão a partir dos commits (`notes.md`), cria a tag `v<VERSION>` e publica o GitHub Release automaticamente via GitHub CLI (`gh`).
 
-### Configurando o Runner Self-Hosted
-Para configurar uma máquina Windows com Delphi como runner de CI:
-1. No repositório GitHub, acesse **Settings > Actions > Runners > New self-hosted runner**.
-2. Baixe e configure o runner no Windows conforme as instruções do GitHub.
-3. Adicione as seguintes tags/labels personalizadas ao runner:
-   `self-hosted`, `windows`, `delphi`
-4. Certifique-se de que o Delphi XE8+ esteja instalado e com `rsvars.bat` funcional no registro.
 
-> [!CAUTION]
-> Num repositório público, um runner self-hosted executa o código do Pull Request **na sua máquina**. Por isso o job `build-test` só roda para PRs abertos a partir de branches **do próprio repositório**; PRs vindos de forks passam apenas pelo `lint` (em runner do GitHub). Mantenha também em **Settings > Actions > General** a opção **Require approval for all outside collaborators** e use um usuário do Windows sem privilégios de administrador para o serviço do runner.
-
-### Proteção de Branch
-Recomenda-se configurar a proteção da branch `main` no GitHub (**Settings > Branches > Add branch protection rule**):
-- Marcar **Require status checks to pass before merging**.
-- Exigir os checks: `lint` e `build-test`.
-- Exigir **Require branches to be up to date before merging**.
-
----
 
 ## Contribuindo
 
@@ -397,5 +380,3 @@ Consulte o guia detalhado em [CONTRIBUTING.md](CONTRIBUTING.md).
 ## Licença
 
 Distribuído sob os termos da licença MIT. Consulte o arquivo [LICENSE](LICENSE) para mais detalhes.
-
-Copyright (c) 2026 Evaldo Avelar Marques.

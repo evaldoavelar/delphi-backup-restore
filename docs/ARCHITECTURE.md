@@ -102,13 +102,13 @@ Zip opcional: `DelphiEnv_<MAQUINA>_<stamp>.zip` ao lado da pasta (tar -a -c -f),
 
 ## Units e assinaturas públicas
 
-### Core.Logger (luna)
+### Core.Logger
 ```pascal
 function CreateLogger: ILogger;   // thread-safe (TCriticalSection); arquivo UTF-8; linha:
                                   // 'yyyy-mm-dd hh:nn:ss.zzz [LEVEL] mensagem'
 ```
 
-### Core.ProcessRunner (luna)
+### Core.ProcessRunner
 ```pascal
 function CreateProcessRunner(const ALogger: ILogger): IProcessRunner;
 ```
@@ -120,7 +120,7 @@ Saída de robocopy/reg decodificada com a code page OEM (`GetOEMCP`). `CopyTree`
 `reg delete <key> /f` (sucesso também se a chave não existir). `ZipFolder`: `tar -a -c -f <zip> -C <pai>
 <nomePasta>`. `UnzipTo`: `tar -x -f <zip> -C <dest>`.
 
-### Core.SystemUtils (luna)
+### Core.SystemUtils
 ```pascal
 function IsRunningAsAdmin: Boolean;
 function IsDelphiIdeRunning(out AProcessNames: string): Boolean;  // bds.exe, delphi32.exe (Toolhelp32)
@@ -142,7 +142,7 @@ function ToolVersion: string;                                    // lido do recu
 function MachineName: string;
 ```
 
-### Core.VersionCatalog (luna)
+### Core.VersionCatalog
 ```pascal
 function ProductNameForVersion(AEra: TDelphiEra; const ABdsVersion: string): string;
 // D5..D7 (Borland\Delphi 5.0/6.0/7.0), BDS 3.0=Delphi 2005, 4.0=2006, 5.0=2007, 6.0=2009, 7.0=2010,
@@ -160,7 +160,7 @@ de registro (`'22.0'`, `'5.0'`), exceto na era `Borland\Delphi` (Delphi 5..7), q
 (`'D7.0'`): Delphi 5 e Delphi 2007 (BDS 5.0) usam ambos a chave `5.0`. Helpers em `Core.Types`:
 `LegacyDelphiId`, `IsLegacyDelphiId`, `VersionIdNumber`. A CLI aceita o identificador (`--versions D7.0,22.0`).
 
-### Core.VersionDetector (luna)
+### Core.VersionDetector
 ```pascal
 function CreateVersionDetector(const ALogger: ILogger): IVersionDetector;
 ```
@@ -169,7 +169,7 @@ para as 4 eras. Instalada = `RootDir` existe e `bin\bds.exe` ou `bin\delphi32.ex
 todos os campos de `TDelphiVersion` (CommonDir/UserDir/AppDataDir: ler `Environment Variables` do HKCU
 (`BDSCOMMONDIR`) se existir; senão derivar por era). Lista ordenada com `SortOldestFirst`.
 
-### Core.PathDiscovery (terra)
+### Core.PathDiscovery
 ```pascal
 function CreatePathDiscovery(const ALogger: ILogger): IPathDiscovery;
 function ResolveBdsMacros(const AText: string; AVersion: TDelphiVersion; const APlatform: string): string;
@@ -191,7 +191,7 @@ UserDir, AppDataDir (icIdeConfig), `HKCU\<RegistryKey>` e `HKLM\SOFTWARE\<Regist
 `%USERPROFILE%\.boss` (icBoss, global) se existir. ExtraFolders/ExtraRegistryKeys do config (icExtra).
 Mesma pasta usada por várias versões → um item só, com todas as versões em `Versions`.
 
-### Core.Manifest (terra)
+### Core.Manifest
 ```pascal
 procedure SaveManifest(AManifest: TManifest; const AFileName: string);   // JSON UTF-8 indentado
 function LoadManifest(const AFileName: string): TManifest;              // raise EDelphiBackupError se inválido
@@ -208,7 +208,7 @@ function BuildEnvironmentManifest(AVersions: TDelphiVersionList; AItems: TBackup
   // a escanear para cada item (no backup: a cópia; no compare: o caminho original)
 ```
 
-### Core.BackupEngine (terra)
+### Core.BackupEngine
 ```pascal
 type
   TBackupEngine = class
@@ -224,7 +224,7 @@ Cria a pasta, configura `ALogger.SetLogFile(<pasta>\backup.log)`, copia itens Se
 manifest (hash por item), zipa se pedido (e remove a pasta depois de zipar com sucesso? **não** — mantém).
 Falha de um item → Warn e continua; ao final, se houve falhas, retorna mesmo assim mas loga resumo.
 
-### Core.RestoreEngine (sol)
+### Core.RestoreEngine
 ```pascal
 type
   TRestorePlanStep = class  { para a GUI mostrar antes de executar }
@@ -270,7 +270,7 @@ Depois: itens globais (Versions vazio), ikDll só se não existir no destino ou 
 backup, e merge do `UserPath` (adicionar entradas do backup ausentes, sem duplicar, remapeadas).
 Caminhos de destino de pastas também passam por `RemapProfilePath`.
 
-### Core.CompareEngine (terra)
+### Core.CompareEngine 
 ```pascal
 type
   TCompareEngine = class
@@ -287,7 +287,7 @@ function DiffManifests(ABackup, ACurrent: TManifest; const AVersions: TArray<str
   // remapeado), registro por hash normalizado
 ```
 
-### Core.DllScanner (sol)
+### Core.DllScanner 
 ```pascal
 function CreateDllScanner(const ALogger: ILogger): IDllScanner;
 function ReadPeImports(const AFileName: string; AImports: TStrings): Boolean; // nomes das DLLs importadas
@@ -300,7 +300,7 @@ Windows (System32/SysWOW64 com CompanyName Microsoft, ou api-ms-*/ext-ms-*). Var
 *.bpl em System32 e SysWOW64 com CompanyName não vazio e sem 'Microsoft'; Borland/CodeGear/Embarcadero →
 `ReinstalledByIde=True`. Itens: ikDll, icSystemDll, Selected=False, Versions vazio, Company/FileVersion.
 
-### UI e CLI (sonnet)
+### UI e CLI 
 - `src/DelphiBackupRestore.dpr`: se `ParamCount > 0` → `Cli.Runner.RunCli` (console anexado com
   `AttachConsole(ATTACH_PARENT_PROCESS)` ou `AllocConsole`) e `ExitCode`; senão GUI.
 - `src/Cli.Runner.pas`: `function RunCli: Integer;` comandos `list`, `backup`, `restore`, `compare`,
@@ -314,7 +314,7 @@ Windows (System32/SysWOW64 com CompanyName Microsoft, ou api-ms-*/ext-ms-*). Var
 - `src/DelphiBackupRestore.manifest` (requireAdministrator + comctl v6 + dpiAware) e
   `src/DelphiBackupRestore.rc` (MANIFEST + VERSIONINFO lido de `VERSION`; gerado pelo build.bat).
 
-### build.bat (luna)
+### build.bat
 Localiza `rsvars.bat` (argumento `--bds <versão>` ou o BDS mais novo em
 `HKLM\SOFTWARE\WOW6432Node\Embarcadero\BDS\*` com `rsvars.bat`), gera `src\VersionInfo.rc` a partir de
 `VERSION`, compila com `brcc32`, roda `dcc32 -B -Q -NSSystem;Winapi;Vcl;Vcl.Imaging -E..\bin
