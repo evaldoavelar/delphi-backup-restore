@@ -143,6 +143,16 @@ begin
     Result := FormatFloat('0', ABytes / 1024.0) + ' KB';
 end;
 
+function MaskNonAscii(const S: string): string;
+var
+  I: Integer;
+begin
+  Result := S;
+  for I := 1 to Length(Result) do
+    if Ord(Result[I]) > 127 then
+      Result[I] := '?';
+end;
+
 constructor TBackupEngine.Create(const ALogger: ILogger;
   const ARunner: IProcessRunner);
 begin
@@ -180,16 +190,20 @@ begin
   InZip := TStringList.Create;
   Lines := TStringList.Create;
   try
+    { tar lists names through the ANSI code page, so non-ASCII characters are
+      lossy and distinct names may collapse into one; compare with every
+      non-ASCII char masked and keep duplicates }
     InFolder.CaseSensitive := False;
-    InFolder.Duplicates := dupIgnore;
-    InFolder.Sorted := True;
     InZip.CaseSensitive := False;
-    InZip.Duplicates := dupIgnore;
+    InZip.Duplicates := dupAccept;
     InZip.Sorted := True;
     Matches := ListFilesInTree(Folder, InFolder) and
       ListBackupZip(AZip, FRunner, FLogger, Lines);
     if Matches then
     begin
+      for I := 0 to InFolder.Count - 1 do
+        InFolder[I] := MaskNonAscii(InFolder[I]);
+      InFolder.Sort;
       Prefix := Name + '\';
       for Line in Lines do
       begin
@@ -202,7 +216,7 @@ begin
           Break;
         end;
         if not EndsText('\', Entry) then
-          InZip.Add(Copy(Entry, Length(Prefix) + 1, MaxInt));
+          InZip.Add(MaskNonAscii(Copy(Entry, Length(Prefix) + 1, MaxInt)));
       end;
       Matches := Matches and (InZip.Count = InFolder.Count);
       if Matches then
