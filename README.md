@@ -1,6 +1,8 @@
 # Delphi Backup & Restore
 
-Ferramenta pública VCL de código aberto para Windows (com interface gráfica e de linha de comando) dedicada ao backup e à restauração completos de ambientes de desenvolvimento Embarcadero Delphi.
+Ferramenta para Windows (com interface gráfica e de linha de comando) dedicada ao backup e à restauração completos de ambientes de desenvolvimento Delphi.
+
+![Delphi Backup & Restore](docs/img/ui-3-itens.png)
 
 
 
@@ -63,7 +65,7 @@ O utilitário detecta automaticamente as instalações presentes nas chaves `HKL
 ## Ordem de instalação
 
 > [!IMPORTANT]
-> **Regra de ouro da comunidade Delphi:** Instale sempre as IDEs da **mais antiga para a mais nova** antes de executar a restauração do backup. O processo de restauração aplica os dados rigorosamente da **mais antiga para a mais nova**.
+> Instale sempre as IDEs da **mais antiga para a mais nova** antes de executar a restauração do backup. O processo de restauração aplica os dados rigorosamente da **mais antiga para a mais nova**.
 
 Essa ordem garante que variáveis de ambiente, BPLs compartilhadas no `PATH` do sistema e chaves de registro de subsistemas comuns sejam resolvidas com as versões mais recentes das bibliotecas, evitando conflitos de sobreposição.
 Para detalhes sobre essa necessidade técnica, consulte os consensos da comunidade:
@@ -170,6 +172,12 @@ Execute `DelphiBackupRestore.exe` sem parâmetros:
 4. **Defina os caminhos:** Aponte o diretório de destino (para backup) ou o arquivo `.zip` / pasta de origem (para restore/compare).
 5. **Acompanhe a execução:** O progresso e as mensagens detalhadas de log são exibidos em tempo real na tela.
 
+| 1. Operação | 2. Versões |
+|---|---|
+| ![Escolha da operação](docs/img/ui-1-operacao.png) | ![Versões instaladas](docs/img/ui-2-versoes.png) |
+| **3. Itens** | **4. Destino** |
+| ![Itens encontrados](docs/img/ui-3-itens.png) | ![Pasta de destino](docs/img/ui-4-destino.png) |
+
 ---
 
 ## Como usar — Linha de Comando (CLI)
@@ -183,6 +191,16 @@ bin\DelphiBackupRestoreCli.exe <comando> [opções]
 > [!TIP]
 > `DelphiBackupRestoreCli.exe` foi compilado como aplicação de console nativa, com saída imediata de texto e códigos de saída confiáveis.
 > **Recomendação:** Antes de efetuar o seu primeiro backup, execute o comando com a opção `--dry-run` para inspecionar os itens descobertos e o tamanho estimado sem gravar nada no disco.
+
+![Ajuda da CLI](docs/img/cli-help.png)
+
+`list` mostra as versões instaladas e os identificadores usados em `--versions`:
+
+![Comando list](docs/img/cli-list.png)
+
+`backup --dry-run` lista os itens e o espaço necessário sem copiar nada:
+
+![Simulação do backup](docs/img/cli-dry-run.png)
 
 ### Comandos disponíveis
 
@@ -322,33 +340,6 @@ O script `build.bat`:
 6. Se `--tests` for informado, compila e executa `tests\DelphiBackupRestoreTests.dpr`.
 
 ---
-
-## CI/CD e Automação
-
-O repositório possui fluxos de trabalho configurados no GitHub Actions:
-
-```mermaid
-flowchart LR
-    F["branch a partir de develop<br/>(worktree .wc/tarefa)"] --> DV["merge em develop"]
-    DV --> PR["Pull Request<br/>develop → main"]
-    PR --> L["lint (ubuntu)<br/>BOM · XE8 · VERSION"]
-    PR --> BT["build-test (self-hosted Delphi)<br/>build.bat --tests"]
-    L --> MG{"checks verdes?"}
-    BT --> MG
-    MG -- "sim" --> MM["merge em main"]
-    MM --> RL["release.yml<br/>build · zip · SHA256SUMS<br/>tag vX.Y.Z · GitHub Release"]
-```
-
-
-- **PR Validation (`.github/workflows/pr.yml`):**
-  - Executado em pull requests para a branch `main`.
-  - **Job `lint` (ubuntu-latest):** Valida a ausência de arquivos `.dfm`/`.dproj`, verifica se todos os fontes possuem UTF-8 BOM, valida regras de sintaxe compatíveis com Delphi XE8+ e exige que `VERSION` seja estritamente superior à última tag `v*`.
-  - **Job `build-test`:** Executa em runner com labels `[self-hosted, windows, delphi]`, roda `build.bat --tests` e publica os artefatos compilados.
-- **Release Automatizado (`.github/workflows/release.yml`):**
-  - Disparado em merges na branch `main`.
-  - Compila e testa os dois executáveis, gera pacote `.zip`, calcula `SHA256SUMS`, extrai notas de versão a partir dos commits (`notes.md`), cria a tag `v<VERSION>` e publica o GitHub Release automaticamente via GitHub CLI (`gh`).
-
-
 
 ## Contribuindo
 
