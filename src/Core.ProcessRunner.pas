@@ -2,34 +2,50 @@
 
 interface
 
-uses Core.Types;
+uses System.SysUtils, Core.Types;
 
-function CreateProcessRunner(const ALogger: ILogger): IProcessRunner;
+type
+  IPollingProcessRunner = interface
+    ['{215A18F3-A156-4964-87F8-389C9DA6C87C}']
+    function RunLinesWithPoll(const AExe, AArgs, AWorkDir: string;
+      ACodePage: Cardinal; const AOnLine: TProcessLineProc;
+      const AOnPoll: TProc): Cardinal;
+  end;
+
+function CreateProcessRunner(const ALogger: ILogger;
+  const AIsCancelled: TFunc<Boolean> = nil): IProcessRunner;
 function Quote(const S: string): string;
 
 implementation
 
 uses
   Core.SystemUtils, Core.Logger,
-  System.SysUtils, System.Classes, System.StrUtils, System.Win.Registry,
+  System.Classes, System.StrUtils, System.Win.Registry,
   Winapi.Windows;
 
 type
   TProcessRunner = class(TInterfacedObject, IProcessRunner,
-    IStreamingProcessRunner)
+    IStreamingProcessRunner, IPollingProcessRunner)
   private
     FLogger: ILogger;
+    FIsCancelled: TFunc<Boolean>;
+    procedure CheckCancelled;
     function RunCommand(const AExe, AArgs, AWorkDir: string;
-      ACodePage: Cardinal; const AOnLine: TProcessLineProc; out AOutput: string)
-      : Cardinal;
+      ACodePage: Cardinal; const AOnLine: TProcessLineProc;
+      const AOnPoll: TProc; out AOutput: string): Cardinal;
     function RunTool(const AExe, AArgs, AWorkDir: string; ACodePage: Cardinal;
-      const AOnLine: TProcessLineProc; out AOutput: string): Cardinal;
+      const AOnLine: TProcessLineProc; const AOnPoll: TProc;
+      out AOutput: string): Cardinal;
   public
-    constructor Create(const ALogger: ILogger);
+    constructor Create(const ALogger: ILogger;
+      const AIsCancelled: TFunc<Boolean>);
     function Run(const AExe, AArgs, AWorkDir: string; out AOutput: string)
       : Cardinal;
     function RunLines(const AExe, AArgs, AWorkDir: string; ACodePage: Cardinal;
       const AOnLine: TProcessLineProc): Cardinal;
+    function RunLinesWithPoll(const AExe, AArgs, AWorkDir: string;
+      ACodePage: Cardinal; const AOnLine: TProcessLineProc;
+      const AOnPoll: TProc): Cardinal;
     function CopyTree(const ASource, ADest: string; AMirror: Boolean;
       AExcludeDirs, AExcludeFiles: TStrings): Boolean;
     function CopyFile(const ASourceFile, ADestDir: string): Boolean;
@@ -41,18 +57,27 @@ type
     function UnzipTo(const AZipFile, ADestFolder: string): Boolean;
   end;
 
-function CreateProcessRunner(const ALogger: ILogger): IProcessRunner;
+function CreateProcessRunner(const ALogger: ILogger;
+  const AIsCancelled: TFunc<Boolean>): IProcessRunner;
 begin
-  Result := TProcessRunner.Create(ALogger);
+  Result := TProcessRunner.Create(ALogger, AIsCancelled);
 end;
 
-constructor TProcessRunner.Create(const ALogger: ILogger);
+constructor TProcessRunner.Create(const ALogger: ILogger;
+  const AIsCancelled: TFunc<Boolean>);
 begin
   inherited Create;
   FLogger := ALogger;
+  FIsCancelled := AIsCancelled;
   if FLogger = nil then
     FLogger := CreateLogger;
   FLogger.Debug('Criando executor de processos.');
+end;
+
+procedure TProcessRunner.CheckCancelled;
+begin
+  if Assigned(FIsCancelled) and FIsCancelled() then
+    raise EAbort.Create('A execução do processo foi cancelada.');
 end;
 
 function Quote(const S: string): string;
@@ -76,20 +101,28 @@ end;
 function TProcessRunner.Run(const AExe, AArgs, AWorkDir: string;
   out AOutput: string): Cardinal;
 begin
-  Result := RunCommand(AExe, AArgs, AWorkDir, GetOEMCP, nil, AOutput);
+  Result := RunCommand(AExe, AArgs, AWorkDir, GetOEMCP, nil, nil, AOutput);
 end;
 
 function TProcessRunner.RunLines(const AExe, AArgs, AWorkDir: string;
   ACodePage: Cardinal; const AOnLine: TProcessLineProc): Cardinal;
+begin
+  Result := RunLinesWithPoll(AExe, AArgs, AWorkDir, ACodePage, AOnLine, nil);
+end;
+
+function TProcessRunner.RunLinesWithPoll(const AExe, AArgs, AWorkDir: string;
+  ACodePage: Cardinal; const AOnLine: TProcessLineProc; const AOnPoll: TProc)
+  : Cardinal;
 var
   Output: string;
 begin
-  Result := RunCommand(AExe, AArgs, AWorkDir, ACodePage, AOnLine, Output);
+  Result := RunCommand(AExe, AArgs, AWorkDir, ACodePage, AOnLine,
+    AOnPoll, Output);
 end;
 
 function TProcessRunner.RunCommand(const AExe, AArgs, AWorkDir: string;
-  ACodePage: Cardinal; const AOnLine: TProcessLineProc; out AOutput: string)
-  : Cardinal;
+  ACodePage: Cardinal; const AOnLine: TProcessLineProc; const AOnPoll: TProc;
+  out AOutput: string): Cardinal;
 var
   Exe, SystemExe: string;
 begin
@@ -106,14 +139,16 @@ begin
   end;
   if Assigned(FLogger) then
     FLogger.Debug('Executando processo: ' + Exe + ' ' + AArgs);
-  Result := RunTool(Exe, AArgs, AWorkDir, ACodePage, AOnLine, AOutput);
+  Result := RunTool(Exe, AArgs, AWorkDir, ACodePage, AOnLine, AOnPoll, AOutput);
   if Assigned(FLogger) then
     FLogger.Debug(Format('Processo finalizado com código %d', [Result]));
 end;
 
 function TProcessRunner.RunTool(const AExe, AArgs, AWorkDir: string;
-  ACodePage: Cardinal; const AOnLine: TProcessLineProc; out AOutput: string)
-  : Cardinal;
+  ACodePage: Cardinal; const AOnLine: TProcessLineProc; const AOnPoll: TProc;
+  out AOutput: string): Cardinal;
+const
+  PIPE_BUFFER_SIZE = 512 * 1024;
 var
   Security: TSecurityAttributes;
   ReadPipe, WritePipe: THandle;
@@ -122,22 +157,17 @@ var
   CommandLine: string;
   Buffer: array [0 .. 8191] of Byte;
   ReadCount, Available: DWORD;
+  WaitResult: DWORD;
   RawOutput: TBytesStream;
   Encoding: TEncoding;
   WorkDir: PChar;
+  Completed: Boolean;
 
   procedure EmitLine;
   begin
     if RawOutput.Size = 0 then
       Exit;
-    try
-      AOnLine(Encoding.GetString(RawOutput.Bytes, 0, RawOutput.Size));
-    except
-      { Finish cancelling this child before the caller cleans up its output file. }
-      if TerminateProcess(ProcessInfo.hProcess, ERROR_CANCELLED) then
-        WaitForSingleObject(ProcessInfo.hProcess, INFINITE);
-      raise;
-    end;
+    AOnLine(Encoding.GetString(RawOutput.Bytes, 0, RawOutput.Size));
     RawOutput.Size := 0;
     RawOutput.Position := 0;
   end;
@@ -160,13 +190,15 @@ var
   end;
 
 begin
+  CheckCancelled;
   AOutput := '';
   FillChar(Security, SizeOf(Security), 0);
   Security.nLength := SizeOf(Security);
   Security.bInheritHandle := True;
   ReadPipe := 0;
   WritePipe := 0;
-  if not CreatePipe(ReadPipe, WritePipe, @Security, 0) then
+  { Let tools with bulk output refill the pipe while the reader is waiting. }
+  if not CreatePipe(ReadPipe, WritePipe, @Security, PIPE_BUFFER_SIZE) then
     RaiseLastOSError;
   try
     if not SetHandleInformation(ReadPipe, HANDLE_FLAG_INHERIT, 0) then
@@ -194,10 +226,14 @@ begin
     WritePipe := 0;
     RawOutput := nil;
     Encoding := nil;
+    Completed := False;
     try
       RawOutput := TBytesStream.Create;
       Encoding := TEncoding.GetEncoding(ACodePage);
       repeat
+        CheckCancelled;
+        if Assigned(AOnPoll) then
+          AOnPoll();
         if not PeekNamedPipe(ReadPipe, nil, 0, nil, @Available, nil) then
         begin
           if GetLastError = ERROR_BROKEN_PIPE then
@@ -228,14 +264,24 @@ begin
       if Assigned(AOnLine) then
         EmitLine;
       { The child can also close stdout before exiting. }
-      if WaitForSingleObject(ProcessInfo.hProcess, INFINITE) <> WAIT_OBJECT_0
-      then
+      repeat
+        CheckCancelled;
+        WaitResult := WaitForSingleObject(ProcessInfo.hProcess, 20);
+        if (WaitResult = WAIT_TIMEOUT) and Assigned(AOnPoll) then
+          AOnPoll();
+      until WaitResult <> WAIT_TIMEOUT;
+      if WaitResult <> WAIT_OBJECT_0 then
         RaiseLastOSError;
       if not GetExitCodeProcess(ProcessInfo.hProcess, Result) then
         RaiseLastOSError;
       if not Assigned(AOnLine) then
         AOutput := Encoding.GetString(RawOutput.Bytes, 0, RawOutput.Size);
+      Completed := True;
     finally
+      { Stop the child before the caller can clean up its output files. }
+      if not Completed and TerminateProcess(ProcessInfo.hProcess,
+        ERROR_CANCELLED) then
+        WaitForSingleObject(ProcessInfo.hProcess, INFINITE);
       Encoding.Free;
       RawOutput.Free;
       CloseHandle(ProcessInfo.hThread);
