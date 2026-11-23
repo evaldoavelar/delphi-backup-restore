@@ -17,7 +17,8 @@ type
     constructor Create(const ALogger: ILogger; const ARunner: IProcessRunner);
     function Execute(const AOptions: TBackupOptions;
       AVersions: TDelphiVersionList; AItems: TBackupItemList;
-      AConfig: TToolConfig; const AProgress: TProgressProc): string;
+      AConfig: TToolConfig; const AProgress: TProgressProc;
+      const AZipProgress: TProgressProc = nil): string;
     { Items that could not be copied/exported in the last Execute (0 = complete backup). }
     property FailureCount: Integer read FFailureCount;
   end;
@@ -37,8 +38,8 @@ implementation
 
 uses System.Classes, System.IOUtils, System.StrUtils, Winapi.Windows,
   Core.SystemUtils,
-  Core.Manifest, Core.PathDiscovery, Core.VersionDetector, Core.ProcessRunner,
-  Core.Logger;
+  Core.Manifest, Core.PathDiscovery, Core.VersionDetector,
+  Core.Logger, Core.Zip;
 
 function ItemInScope(AItem: TBackupItem; const AOptions: TBackupOptions;
   AVersions: TDelphiVersionList): Boolean;
@@ -142,6 +143,16 @@ begin
     Result := FormatFloat('0', ABytes / 1024.0) + ' KB';
 end;
 
+function MaskNonAscii(const S: string): string;
+var
+  I: Integer;
+begin
+  Result := S;
+  for I := 1 to Length(Result) do
+    if Ord(Result[I]) > 127 then
+      Result[I] := '?';
+end;
+
 constructor TBackupEngine.Create(const ALogger: ILogger;
   const ARunner: IProcessRunner);
 begin
@@ -159,7 +170,7 @@ end;
 procedure TBackupEngine.RemoveFolderAfterZip(const AFolder, AZip,
   ADestination: string);
 var
-  Folder, Name, Prefix, Output, Line, Entry: string;
+  Folder, Name, Prefix, Line, Entry: string;
   InFolder, InZip, Lines: TStringList;
   I: Integer;
   Matches: Boolean;
@@ -179,18 +190,21 @@ begin
   InZip := TStringList.Create;
   Lines := TStringList.Create;
   try
+    { tar lists names through the ANSI code page, so non-ASCII characters are
+      lossy and distinct names may collapse into one; compare with every
+      non-ASCII char masked and keep duplicates }
     InFolder.CaseSensitive := False;
-    InFolder.Duplicates := dupIgnore;
-    InFolder.Sorted := True;
     InZip.CaseSensitive := False;
-    InZip.Duplicates := dupIgnore;
+    InZip.Duplicates := dupAccept;
     InZip.Sorted := True;
     Matches := ListFilesInTree(Folder, InFolder) and
-      (FRunner.Run('tar.exe', '-t -f ' + Quote(AZip), '', Output) = 0);
+      ListBackupZip(AZip, FRunner, FLogger, Lines);
     if Matches then
     begin
+      for I := 0 to InFolder.Count - 1 do
+        InFolder[I] := MaskNonAscii(InFolder[I]);
+      InFolder.Sort;
       Prefix := Name + '\';
-      Lines.Text := Output;
       for Line in Lines do
       begin
         if (Line = '') or StartsText('tar:', Line) then
@@ -202,7 +216,7 @@ begin
           Break;
         end;
         if not EndsText('\', Entry) then
-          InZip.Add(Copy(Entry, Length(Prefix) + 1, MaxInt));
+          InZip.Add(MaskNonAscii(Copy(Entry, Length(Prefix) + 1, MaxInt)));
       end;
       Matches := Matches and (InZip.Count = InFolder.Count);
       if Matches then
@@ -232,7 +246,7 @@ end;
 
 function TBackupEngine.Execute(const AOptions: TBackupOptions;
   AVersions: TDelphiVersionList; AItems: TBackupItemList; AConfig: TToolConfig;
-  const AProgress: TProgressProc): string;
+  const AProgress, AZipProgress: TProgressProc): string;
 var
   Root, Dest, Zip, S: string;
   It: TBackupItem;
@@ -418,7 +432,8 @@ begin
           be deleted; later messages still reach the console/GUI sinks }
         FLogger.SetLogFile('');
         Zip := Root + '.zip';
-        if not FRunner.ZipFolder(Root, Zip) then
+        if not CreateBackupZip(Root, Zip, AOptions.ZipStore, FRunner, FLogger,
+          AZipProgress) then
           raise EDelphiBackupError.Create('Falha ao compactar backup.');
         Result := Zip;
         if not AOptions.KeepFolder then

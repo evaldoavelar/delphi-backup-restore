@@ -1,6 +1,8 @@
 # Delphi Backup & Restore
 
-Ferramenta pública VCL de código aberto para Windows (com interface gráfica e de linha de comando) dedicada ao backup e à restauração completos de ambientes de desenvolvimento Embarcadero Delphi.
+Ferramenta para Windows (com interface gráfica e de linha de comando) dedicada ao backup e à restauração completos de ambientes de desenvolvimento Delphi.
+
+![Delphi Backup & Restore](docs/img/ui-3-itens.png)
 
 
 
@@ -63,7 +65,7 @@ O utilitário detecta automaticamente as instalações presentes nas chaves `HKL
 ## Ordem de instalação
 
 > [!IMPORTANT]
-> **Regra de ouro da comunidade Delphi:** Instale sempre as IDEs da **mais antiga para a mais nova** antes de executar a restauração do backup. O processo de restauração aplica os dados rigorosamente da **mais antiga para a mais nova**.
+> Instale sempre as IDEs da **mais antiga para a mais nova** antes de executar a restauração do backup. O processo de restauração aplica os dados rigorosamente da **mais antiga para a mais nova**.
 
 Essa ordem garante que variáveis de ambiente, BPLs compartilhadas no `PATH` do sistema e chaves de registro de subsistemas comuns sejam resolvidas com as versões mais recentes das bibliotecas, evitando conflitos de sobreposição.
 Para detalhes sobre essa necessidade técnica, consulte os consensos da comunidade:
@@ -134,7 +136,18 @@ DelphiEnv_<NOME_MAQUINA>_<yyyyMMdd_HHnn>\
       └── <ItemId>\<arquivo>
 ```
 
-Se a opção de compactação estiver habilitada (padrão), o arquivo `DelphiEnv_<NOME_MAQUINA>_<yyyyMMdd_HHnn>.zip` será gerado no mesmo diretório de destino. Depois de gerar o zip, a ferramenta **confere** a quantidade de arquivos do zip (`tar -t`) contra a da pasta e, **somente se conferir**, remove a pasta — o backup fica só no `.zip`. Se não conferir, a pasta é mantida e um aviso é registrado. Use `--keep-folder` (ou a opção na tela) para manter também a pasta.
+Se a opção de compactação estiver habilitada (padrão), o arquivo `DelphiEnv_<NOME_MAQUINA>_<yyyyMMdd_HHnn>.zip` será gerado no mesmo diretório de destino. Depois de gerar o zip, a ferramenta **confere** a lista de nomes dos arquivos do zip (`tar -t`) contra a da pasta e, **somente se conferir**, remove a pasta — o backup fica só no `.zip`. Se não conferir, a pasta é mantida e um aviso é registrado. Use `--keep-folder` (ou a opção na tela) para manter também a pasta.
+
+#### Compactação: 7-Zip recomendado
+
+> [!TIP]
+> **Instale o [7-Zip](https://www.7-zip.org/) na máquina de origem.** Quando ele está instalado, a ferramenta o usa automaticamente (`7z.exe`, com várias threads) e a compactação fica muito mais rápida: em ambientes grandes, com milhares de arquivos pequenos (ACBr, por exemplo), cai de horas para minutos.
+
+- **Sem 7-Zip:** usa o `tar.exe` que vem no Windows. Funciona em qualquer máquina, mas compacta com uma única thread.
+- **Progresso:** nos dois casos a tela e a CLI mostram porcentagem, velocidade e tempo restante (`Compactando: 52% (82,6 de 158,9 MB) - 39,7 MB/s - faltam ~2 s`).
+- **`--zip-store`** (ou "Sem compressão" na tela): gera o zip sem comprimir. É bem mais rápido, mesmo sem 7-Zip, e o arquivo fica pouco maior, porque binários e `.dcu` comprimem pouco.
+- **`--no-zip`:** não gera zip. É a opção mais rápida quando o backup vai direto para um disco externo ou para a rede.
+- **Na máquina de destino o 7-Zip não é necessário:** o restore lê o `.zip` com o `tar.exe` do Windows ou aceita a pasta.
 
 ### Manifesto e privilégios (`asInvoker`)
 
@@ -170,6 +183,12 @@ Execute `DelphiBackupRestore.exe` sem parâmetros:
 4. **Defina os caminhos:** Aponte o diretório de destino (para backup) ou o arquivo `.zip` / pasta de origem (para restore/compare).
 5. **Acompanhe a execução:** O progresso e as mensagens detalhadas de log são exibidos em tempo real na tela.
 
+| 1. Operação | 2. Versões |
+|---|---|
+| ![Escolha da operação](docs/img/ui-1-operacao.png) | ![Versões instaladas](docs/img/ui-2-versoes.png) |
+| **3. Itens** | **4. Destino** |
+| ![Itens encontrados](docs/img/ui-3-itens.png) | ![Pasta de destino](docs/img/ui-4-destino.png) |
+
 ---
 
 ## Como usar — Linha de Comando (CLI)
@@ -183,6 +202,16 @@ bin\DelphiBackupRestoreCli.exe <comando> [opções]
 > [!TIP]
 > `DelphiBackupRestoreCli.exe` foi compilado como aplicação de console nativa, com saída imediata de texto e códigos de saída confiáveis.
 > **Recomendação:** Antes de efetuar o seu primeiro backup, execute o comando com a opção `--dry-run` para inspecionar os itens descobertos e o tamanho estimado sem gravar nada no disco.
+
+![Ajuda da CLI](docs/img/cli-help.png)
+
+`list` mostra as versões instaladas e os identificadores usados em `--versions`:
+
+![Comando list](docs/img/cli-list.png)
+
+`backup --dry-run` lista os itens e o espaço necessário sem copiar nada:
+
+![Simulação do backup](docs/img/cli-dry-run.png)
 
 ### Comandos disponíveis
 
@@ -205,6 +234,7 @@ bin\DelphiBackupRestoreCli.exe <comando> [opções]
 | `--dry-run` | Executa a descoberta e lista itens e tamanhos estimados **sem copiar arquivos** (válido para `backup`). |
 | `--no-zip` | Não gera o arquivo `.zip` compactado (mantém apenas a pasta descompactada). |
 | `--keep-folder` | Com zip: mantém também a pasta do backup (padrão: a pasta é removida depois de conferir o zip). |
+| `--zip-store` | Gera o `.zip` sem compressão: mais rápido, arquivo um pouco maior. Não pode ser usado com `--no-zip`. |
 | `--scan-dlls` | Executa varredura de DLLs de terceiros em `System32` e `SysWOW64`. |
 | `--categories <lista>` | Categorias a incluir: `components`, `ide-config`, `experts`, `boss`, `extra`, `system-dll`. |
 | `--config <arquivo>` | Caminho para arquivo de configuração JSON customizado (padrão: `DelphiBackupRestore.json` ao lado do executável). |
@@ -291,6 +321,7 @@ O comportamento de cópia e exclusão pode ser estendido criando o arquivo `Delp
 ## Requisitos do Sistema
 
 - **Sistema Operacional:** Windows 10 (versão 1803 ou superior), Windows 11, Windows Server 2019 ou Windows Server 2022 (o utilitário utiliza nativamente o comando `tar.exe` do Windows para manipulação de arquivos `.zip`).
+- **Recomendado na máquina de origem:** [7-Zip](https://www.7-zip.org/), para compactar o backup muito mais rápido (opcional; veja [Compactação](#compactação-7-zip-recomendado)).
 - **Privilégios:**
   - Usuário comum (*asInvoker*) para `backup`, `compare` e `list`.
   - **Administrador** (*Elevated Privileges*) obrigatório para `restore`.
@@ -322,33 +353,6 @@ O script `build.bat`:
 6. Se `--tests` for informado, compila e executa `tests\DelphiBackupRestoreTests.dpr`.
 
 ---
-
-## CI/CD e Automação
-
-O repositório possui fluxos de trabalho configurados no GitHub Actions:
-
-```mermaid
-flowchart LR
-    F["branch a partir de develop<br/>(worktree .wc/tarefa)"] --> DV["merge em develop"]
-    DV --> PR["Pull Request<br/>develop → main"]
-    PR --> L["lint (ubuntu)<br/>BOM · XE8 · VERSION"]
-    PR --> BT["build-test (self-hosted Delphi)<br/>build.bat --tests"]
-    L --> MG{"checks verdes?"}
-    BT --> MG
-    MG -- "sim" --> MM["merge em main"]
-    MM --> RL["release.yml<br/>build · zip · SHA256SUMS<br/>tag vX.Y.Z · GitHub Release"]
-```
-
-
-- **PR Validation (`.github/workflows/pr.yml`):**
-  - Executado em pull requests para a branch `main`.
-  - **Job `lint` (ubuntu-latest):** Valida a ausência de arquivos `.dfm`/`.dproj`, verifica se todos os fontes possuem UTF-8 BOM, valida regras de sintaxe compatíveis com Delphi XE8+ e exige que `VERSION` seja estritamente superior à última tag `v*`.
-  - **Job `build-test`:** Executa em runner com labels `[self-hosted, windows, delphi]`, roda `build.bat --tests` e publica os artefatos compilados.
-- **Release Automatizado (`.github/workflows/release.yml`):**
-  - Disparado em merges na branch `main`.
-  - Compila e testa os dois executáveis, gera pacote `.zip`, calcula `SHA256SUMS`, extrai notas de versão a partir dos commits (`notes.md`), cria a tag `v<VERSION>` e publica o GitHub Release automaticamente via GitHub CLI (`gh`).
-
-
 
 ## Contribuindo
 

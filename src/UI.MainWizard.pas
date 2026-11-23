@@ -77,6 +77,7 @@ type
     FBtnBrowse: TButton;
     FBtnBrowseZip: TButton;
     FChkZip: TCheckBox;
+    FChkZipStore: TCheckBox;
     FChkKeepFolder: TCheckBox;
     FMemo: TMemo;
     FProgress: TProgressBar;
@@ -125,6 +126,7 @@ type
     procedure StartCompare;
     procedure RunDone(const AError: string; APrecheck: Boolean;
       const ASuccessText: string);
+    procedure QueueProgress(ACurrent, ATotal: Integer; const AStatus: string);
     procedure OnProgress(ACurrent, ATotal: Integer; const AStep: string);
 
     procedure BackClick(Sender: TObject);
@@ -140,6 +142,8 @@ type
     procedure BrowseFolderClick(Sender: TObject);
     procedure BrowseZipClick(Sender: TObject);
     procedure WizardCloseQuery(Sender: TObject; var CanClose: Boolean);
+  protected
+    procedure CreateParams(var Params: TCreateParams); override;
   public
     constructor Create(AOwner: TComponent); override;
     destructor Destroy; override;
@@ -150,7 +154,7 @@ implementation
 uses
   Core.Logger, Core.ProcessRunner, Core.SystemUtils, Core.VersionDetector,
   System.UITypes, Core.PathDiscovery, Core.BackupEngine, Core.CompareEngine,
-  Core.DllScanner;
+  Core.DllScanner, Core.ToolConfig;
 
 const
   CategoryLabels: array [TItemCategory] of string = ('Componentes de terceiros',
@@ -199,6 +203,15 @@ end;
 
 { TMainWizard }
 
+procedure TMainWizard.CreateParams(var Params: TCreateParams);
+begin
+  inherited CreateParams(Params);
+  { Top-level window with its own taskbar button: the form is built in code
+    (no DFM) and would otherwise be owned by the hidden TApplication window. }
+  Params.WndParent := 0;
+  Params.ExStyle := Params.ExStyle or WS_EX_APPWINDOW;
+end;
+
 constructor TMainWizard.Create(AOwner: TComponent);
 var
   CfgFile: string;
@@ -230,7 +243,7 @@ begin
 
   CfgFile := ExtractFilePath(ParamStr(0)) + CONFIG_FILE_NAME;
   if FileExists(CfgFile) then
-    LoadToolConfig(CfgFile, FConfig, FLogger);
+    Core.ToolConfig.LoadToolConfig(CfgFile, FConfig, FLogger);
 
   Caption := 'Delphi Backup & Restore ' + ToolVersion;
   BorderStyle := bsSingle;
@@ -475,17 +488,26 @@ begin
   FChkZip.Margins.Top := S(8);
   FChkZip.Caption := 'Compactar o backup em um arquivo .zip';
   FChkZip.Checked := True;
-  FChkZip.OnClick := ZipCheckClick;
+  FChkZipStore := TCheckBox.Create(Self);
+  FChkZipStore.Parent := FPanels[wpPath];
+  FChkZipStore.Align := alTop;
+  FChkZipStore.AlignWithMargins := True;
+  FChkZipStore.Margins.Top := S(4);
+  FChkZipStore.Margins.Left := S(20);
+  FChkZipStore.Top := FChkZip.Top + FChkZip.Height + S(1);
+  FChkZipStore.Caption := 'Sem compressão (mais rápido, arquivo maior)';
+  FChkZipStore.Checked := FConfig.ZipStore;
   FChkKeepFolder := TCheckBox.Create(Self);
   FChkKeepFolder.Parent := FPanels[wpPath];
   FChkKeepFolder.Align := alTop;
   FChkKeepFolder.AlignWithMargins := True;
   FChkKeepFolder.Margins.Top := S(4);
   FChkKeepFolder.Margins.Left := S(20);
-  FChkKeepFolder.Top := FChkZip.Top + FChkZip.Height + S(1);
+  FChkKeepFolder.Top := FChkZipStore.Top + FChkZipStore.Height + S(1);
   FChkKeepFolder.Caption :=
     'Manter também a pasta (por padrão ela é removida depois de conferir o .zip)';
   FChkKeepFolder.Checked := False;
+  FChkZip.OnClick := ZipCheckClick;
 end;
 
 procedure TMainWizard.BuildRunPage;
@@ -653,7 +675,7 @@ end;
 
 procedure TMainWizard.ZipCheckClick(Sender: TObject);
 begin
-  { "keep folder" only makes sense when a zip is created }
+  FChkZipStore.Enabled := FChkZip.Checked;
   FChkKeepFolder.Enabled := FChkZip.Checked;
 end;
 
@@ -1154,8 +1176,9 @@ begin
     FBtnBrowse.Caption := 'Procurar...';
     FBtnBrowseZip.Visible := False;
     FChkZip.Visible := True;
+    FChkZipStore.Visible := True;
     FChkKeepFolder.Visible := True;
-    FChkKeepFolder.Enabled := FChkZip.Checked;
+    ZipCheckClick(FChkZip);
   end
   else
   begin
@@ -1167,6 +1190,7 @@ begin
     FBtnBrowseZip.Caption := 'Arquivo .zip...';
     FBtnBrowseZip.Visible := True;
     FChkZip.Visible := False;
+    FChkZipStore.Visible := False;
     FChkKeepFolder.Visible := False;
   end;
 end;
@@ -1253,6 +1277,13 @@ end;
 procedure TMainWizard.OnProgress(ACurrent, ATotal: Integer;
 const AStep: string);
 begin
+  QueueProgress(ACurrent, ATotal, Format('[%d/%d] %s',
+    [ACurrent, ATotal, AStep]));
+end;
+
+procedure TMainWizard.QueueProgress(ACurrent, ATotal: Integer;
+const AStatus: string);
+begin
   { called from the worker thread }
   TThread.Queue(nil, procedure
     begin
@@ -1264,7 +1295,7 @@ begin
         FProgress.Max := ATotal;
         FProgress.Position := ACurrent;
       end;
-      FLblStatus.Caption := Format('[%d/%d] %s', [ACurrent, ATotal, AStep]);
+      FLblStatus.Caption := AStatus;
     end);
 end;
 
@@ -1323,6 +1354,7 @@ begin
   Options.Versions := FSelBds;
   Options.Destination := FDestText;
   Options.CreateZip := FChkZip.Checked;
+  Options.ZipStore := Options.CreateZip and FChkZipStore.Checked;
   Options.KeepFolder := FChkZip.Checked and FChkKeepFolder.Checked;
   Options.ScanDlls := FChkDlls.Checked;
   Options.Categories := DefaultBackupCategories;
@@ -1337,7 +1369,7 @@ begin
       Engine := TBackupEngine.Create(FLogger, FRunner);
       try
         OutPath := Engine.Execute(Options, FSelected, FItems, FConfig,
-          OnProgress);
+          OnProgress, QueueProgress);
       finally
         Engine.Free;
       end;

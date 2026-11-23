@@ -2,7 +2,7 @@
 
 interface
 
-uses System.Classes, System.Win.Registry;
+uses System.Classes, System.Generics.Collections, System.Win.Registry;
 
 function IsRunningAsAdmin: Boolean;
 function IsDelphiIdeRunning(out AProcessNames: string): Boolean;
@@ -29,7 +29,8 @@ function MachineName: string;
 { Number of files below AFolder (recursive, long paths supported, reparse points
   not followed). -1 when the folder cannot be read. }
 function CountFilesInTree(const AFolder: string): Integer;
-function ListFilesInTree(const AFolder: string; AFiles: TStrings): Boolean;
+function ListFilesInTree(const AFolder: string; AFiles: TStrings;
+  ASizes: TDictionary<string, Int64> = nil): Boolean;
 function CreateTempDirectory(const APrefix: string): string;
 { Deletes AFolder and everything below it (long paths supported). True when the
   folder no longer exists afterwards. }
@@ -494,8 +495,8 @@ begin
   Result := False;
 end;
 
-function CountFilesInTreeLong(const ALongDir, ARelDir: string;
-  AFiles: TStrings): Integer;
+function CountFilesInTreeLong(const ALongDir, ARelDir: string; AFiles: TStrings;
+  ASizes: TDictionary<string, Int64>): Integer;
 var
   Find: TWin32FindData;
   H: THandle;
@@ -517,7 +518,7 @@ begin
       begin
         if (Find.dwFileAttributes and FILE_ATTRIBUTE_REPARSE_POINT) <> 0 then
         begin
-          if AFiles <> nil then
+          if (AFiles <> nil) or (ASizes <> nil) then
             Exit(-1);
           if (Find.dwFileAttributes and FILE_ATTRIBUTE_DIRECTORY) = 0 then
             Inc(Result);
@@ -525,7 +526,7 @@ begin
         else if (Find.dwFileAttributes and FILE_ATTRIBUTE_DIRECTORY) <> 0 then
         begin
           Sub := CountFilesInTreeLong(IncludeTrailingPathDelimiter(ALongDir) +
-            Name, ARelDir + Name + '\', AFiles);
+            Name, ARelDir + Name + '\', AFiles, ASizes);
           if Sub < 0 then
             Exit(-1);
           Inc(Result, Sub);
@@ -535,6 +536,9 @@ begin
           Inc(Result);
           if AFiles <> nil then
             AFiles.Add(ARelDir + Name);
+          if ASizes <> nil then
+            ASizes.Add(ARelDir + Name, (Int64(Find.nFileSizeHigh) shl 32) or
+              Find.nFileSizeLow);
         end;
       end;
       if not FindNextFile(H, Find) then
@@ -556,25 +560,37 @@ begin
   P := NormalizePath(AFolder);
   if (P = '') or not DirectoryExists(P) then
     Exit(-1);
-  Result := CountFilesInTreeLong(LongPathPrefix(P), '', nil);
+  Result := CountFilesInTreeLong(LongPathPrefix(P), '', nil, nil);
 end;
 
-function ListFilesInTree(const AFolder: string; AFiles: TStrings): Boolean;
+function ListFilesInTree(const AFolder: string; AFiles: TStrings;
+  ASizes: TDictionary<string, Int64>): Boolean;
 var
   L: ILogger;
+  Count: Integer;
+
+  procedure ClearResults;
+  begin
+    if AFiles <> nil then
+      AFiles.Clear;
+    if ASizes <> nil then
+      ASizes.Clear;
+  end;
+
 begin
   L := CreateLogger;
   L.Debug('Listando nomes dos arquivos em ' + AFolder);
-  AFiles.Clear;
-  Result := IsAbsoluteFileSystemPath(AFolder) and
-    not PathHasReparsePoint(AFolder) and
-    (CountFilesInTreeLong(LongPathPrefix(NormalizePath(AFolder)), '',
-    AFiles) >= 0);
+  ClearResults;
+  Count := -1;
+  if IsAbsoluteFileSystemPath(AFolder) and not PathHasReparsePoint(AFolder) then
+    Count := CountFilesInTreeLong(LongPathPrefix(NormalizePath(AFolder)), '',
+      AFiles, ASizes);
+  Result := Count >= 0;
   if Result then
-    L.Debug(Format('%d nomes de arquivos encontrados.', [AFiles.Count]))
+    L.Debug(Format('%d arquivos encontrados.', [Count]))
   else
   begin
-    AFiles.Clear;
+    ClearResults;
     L.Warn('Não foi possível listar os arquivos em ' + AFolder);
   end;
 end;

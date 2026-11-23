@@ -218,6 +218,7 @@ type
     ExtraRegistryKeys: TStringList; // 'HKCU\...' / 'HKLM\...'
     ExcludeDirs: TStringList; // folder names (robocopy /XD)
     ExcludeFiles: TStringList; // masks (robocopy /XF)
+    ZipStore: Boolean; // store ZIP entries without compression (default False)
     constructor Create; // fills default excludes
     destructor Destroy; override;
   end;
@@ -227,6 +228,7 @@ type
     Destination: string;
     // parent folder; engine creates DelphiEnv_<MACHINE>_<stamp>
     CreateZip: Boolean; // default True
+    ZipStore: Boolean; // used only with CreateZip
     { with CreateZip: keep the backup folder next to the .zip. Default False: the
       folder is deleted after the zip is verified (same file count). }
     KeepFolder: Boolean;
@@ -285,6 +287,15 @@ type
     { tar.exe wrappers (Windows 10 1803+). }
     function ZipFolder(const AFolder, AZipFile: string): Boolean;
     function UnzipTo(const AZipFile, ADestFolder: string): Boolean;
+  end;
+
+  TProcessLineProc = reference to procedure(const ALine: string);
+
+  { Optional extension for tools that emit verbose or live progress output. }
+  IStreamingProcessRunner = interface
+    ['{E2AF967B-11F2-4B68-8173-FE8AA86FDCB7}']
+    function RunLines(const AExe, AArgs, AWorkDir: string; ACodePage: Cardinal;
+      const AOnLine: TProcessLineProc): Cardinal;
   end;
 
   IVersionDetector = interface
