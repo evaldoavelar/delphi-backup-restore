@@ -136,7 +136,18 @@ DelphiEnv_<NOME_MAQUINA>_<yyyyMMdd_HHnn>\
       └── <ItemId>\<arquivo>
 ```
 
-Se a opção de compactação estiver habilitada (padrão), o arquivo `DelphiEnv_<NOME_MAQUINA>_<yyyyMMdd_HHnn>.zip` será gerado no mesmo diretório de destino. Depois de gerar o zip, a ferramenta **confere** a quantidade de arquivos do zip (`tar -t`) contra a da pasta e, **somente se conferir**, remove a pasta — o backup fica só no `.zip`. Se não conferir, a pasta é mantida e um aviso é registrado. Use `--keep-folder` (ou a opção na tela) para manter também a pasta.
+Se a opção de compactação estiver habilitada (padrão), o arquivo `DelphiEnv_<NOME_MAQUINA>_<yyyyMMdd_HHnn>.zip` será gerado no mesmo diretório de destino. Depois de gerar o zip, a ferramenta **confere** a lista de nomes dos arquivos do zip (`tar -t`) contra a da pasta e, **somente se conferir**, remove a pasta — o backup fica só no `.zip`. Se não conferir, a pasta é mantida e um aviso é registrado. Use `--keep-folder` (ou a opção na tela) para manter também a pasta.
+
+#### Compactação: 7-Zip recomendado
+
+> [!TIP]
+> **Instale o [7-Zip](https://www.7-zip.org/) na máquina de origem.** Quando ele está instalado, a ferramenta o usa automaticamente (`7z.exe`, com várias threads) e a compactação fica muito mais rápida: em ambientes grandes, com milhares de arquivos pequenos (ACBr, por exemplo), cai de horas para minutos.
+
+- **Sem 7-Zip:** usa o `tar.exe` que vem no Windows. Funciona em qualquer máquina, mas compacta com uma única thread.
+- **Progresso:** nos dois casos a tela e a CLI mostram porcentagem, velocidade e tempo restante (`Compactando: 52% (82,6 de 158,9 MB) - 39,7 MB/s - faltam ~2 s`).
+- **`--zip-store`** (ou "Sem compressão" na tela): gera o zip sem comprimir. É bem mais rápido, mesmo sem 7-Zip, e o arquivo fica pouco maior, porque binários e `.dcu` comprimem pouco.
+- **`--no-zip`:** não gera zip. É a opção mais rápida quando o backup vai direto para um disco externo ou para a rede.
+- **Na máquina de destino o 7-Zip não é necessário:** o restore lê o `.zip` com o `tar.exe` do Windows ou aceita a pasta.
 
 ### Manifesto e privilégios (`asInvoker`)
 
@@ -223,6 +234,7 @@ bin\DelphiBackupRestoreCli.exe <comando> [opções]
 | `--dry-run` | Executa a descoberta e lista itens e tamanhos estimados **sem copiar arquivos** (válido para `backup`). |
 | `--no-zip` | Não gera o arquivo `.zip` compactado (mantém apenas a pasta descompactada). |
 | `--keep-folder` | Com zip: mantém também a pasta do backup (padrão: a pasta é removida depois de conferir o zip). |
+| `--zip-store` | Gera o `.zip` sem compressão: mais rápido, arquivo um pouco maior. Não pode ser usado com `--no-zip`. |
 | `--scan-dlls` | Executa varredura de DLLs de terceiros em `System32` e `SysWOW64`. |
 | `--categories <lista>` | Categorias a incluir: `components`, `ide-config`, `experts`, `boss`, `extra`, `system-dll`. |
 | `--config <arquivo>` | Caminho para arquivo de configuração JSON customizado (padrão: `DelphiBackupRestore.json` ao lado do executável). |
@@ -309,6 +321,7 @@ O comportamento de cópia e exclusão pode ser estendido criando o arquivo `Delp
 ## Requisitos do Sistema
 
 - **Sistema Operacional:** Windows 10 (versão 1803 ou superior), Windows 11, Windows Server 2019 ou Windows Server 2022 (o utilitário utiliza nativamente o comando `tar.exe` do Windows para manipulação de arquivos `.zip`).
+- **Recomendado na máquina de origem:** [7-Zip](https://www.7-zip.org/), para compactar o backup muito mais rápido (opcional; veja [Compactação](#compactação-7-zip-recomendado)).
 - **Privilégios:**
   - Usuário comum (*asInvoker*) para `backup`, `compare` e `list`.
   - **Administrador** (*Elevated Privileges*) obrigatório para `restore`.
