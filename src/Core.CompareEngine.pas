@@ -12,7 +12,8 @@ type
   public
     constructor Create(const ALogger: ILogger; const ARunner: IProcessRunner);
     function Execute(const AOptions: Core.Types.TCompareOptions;
-      AInstalled: TDelphiVersionList; AConfig: TToolConfig): TCompareResult;
+      AInstalled: TDelphiVersionList; AConfig: TToolConfig;
+      const AProgress: TProgressProc = nil): TCompareResult;
   end;
 
 function DiffManifests(ABackup, ACurrent: TManifest;
@@ -21,7 +22,7 @@ function DiffManifests(ABackup, ACurrent: TManifest;
 implementation
 
 uses System.SysUtils, System.IOUtils, System.Classes, System.DateUtils,
-  Core.Manifest, Core.SystemUtils, Core.Logger;
+  Core.Manifest, Core.SystemUtils, Core.Logger, Core.Zip;
 
 function Remap(const P, OldProfile, NewProfile: string): string;
 var
@@ -165,7 +166,8 @@ begin
 end;
 
 function TCompareEngine.Execute(const AOptions: Core.Types.TCompareOptions;
-  AInstalled: TDelphiVersionList; AConfig: TToolConfig): TCompareResult;
+  AInstalled: TDelphiVersionList; AConfig: TToolConfig;
+  const AProgress: TProgressProc): TCompareResult;
 var
   Root, Temp, P: string;
   B, C: TManifest;
@@ -185,11 +187,13 @@ begin
   Exclusions := nil;
   try
     try
+      if Assigned(AProgress) then
+        AProgress(0, 0, 'Abrindo backup...');
       Root := AOptions.Source;
       if SameText(ExtractFileExt(Root), '.zip') then
       begin
         Temp := CreateTempDirectory('DelphiBackupRestore_compare_');
-        if not FRunner.UnzipTo(Root, Temp) then
+        if not ExtractBackupZip(Root, Temp, FRunner, FLogger, AProgress) then
           raise EDelphiBackupError.Create('Falha ao extrair backup.');
         Dirs := TDirectory.GetDirectories(Temp);
         if Length(Dirs) <> 1 then
@@ -200,6 +204,8 @@ begin
           raise EDelphiBackupError.Create
             ('Caminho inválido dentro do ZIP: ' + Root);
       end;
+      if Assigned(AProgress) then
+        AProgress(0, 0, 'Lendo manifesto...');
       B := LoadManifest(TPath.Combine(Root, BACKUP_MANIFEST_FILE));
       if B.HasExclusions then
       begin

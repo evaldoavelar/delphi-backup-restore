@@ -80,6 +80,8 @@ begin
   else
   begin
     U8 := UTF8String(Line);
+    { Write the complete line directly to a redirected handle. There is no
+      Delphi text buffer to flush, so readers receive progress during the run. }
     WriteFile(GOut, PAnsiChar(U8)^, Length(U8), Written, nil);
   end;
 end;
@@ -99,6 +101,15 @@ begin
     Line := Line + StringOfChar(' ', GProgressWidth - Length(AText));
   WriteConsole(GOut, PChar(Line), Length(Line), Written, nil);
   GProgressWidth := Length(AText);
+end;
+
+procedure ShowOpenBackupProgress(ACurrent, ATotal: Integer;
+  const AStep: string);
+begin
+  if ATotal > 0 then
+    ShowZipProgress(AStep)
+  else
+    Say(AStep);
 end;
 
 procedure ShowHelp;
@@ -538,7 +549,7 @@ begin
   Engine := TRestoreEngine.Create(ALogger, CreateProcessRunner(ALogger));
   try
     CreateVersionDetector(ALogger).Detect(Installed);
-    Engine.Open(AOpts.Source);
+    Engine.Open(AOpts.Source, ShowOpenBackupProgress);
     Options.Source := AOpts.Source;
     Options.Versions := AOpts.Versions;
     if AOpts.CategoriesGiven then
@@ -595,7 +606,7 @@ begin
     CreateVersionDetector(ALogger).Detect(Installed);
     Options.Source := AOpts.Source;
     Options.Versions := AOpts.Versions;
-    Res := Engine.Execute(Options, Installed, Config);
+    Res := Engine.Execute(Options, Installed, Config, ShowOpenBackupProgress);
     try
       for E in Res.Entries do
       begin

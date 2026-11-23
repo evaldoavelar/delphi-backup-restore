@@ -35,7 +35,7 @@ type
   public
     constructor Create(const ALogger: ILogger; const ARunner: IProcessRunner);
     destructor Destroy; override;
-    procedure Open(const ASource: string);
+    procedure Open(const ASource: string; const AProgress: TProgressProc = nil);
     property Manifest: TManifest read FManifest;
     property BackupRoot: string read FBackupRoot;
     procedure Precheck(const AOptions: TRestoreOptions;
@@ -58,7 +58,7 @@ implementation
 uses
   Winapi.Windows, System.IOUtils, System.StrUtils, Core.Logger,
   Core.SystemUtils, Core.Manifest, Core.PathDiscovery, Core.DllScanner,
-  Core.VersionCatalog;
+  Core.VersionCatalog, Core.Zip;
 
 function SortVersionsOldestFirst(const AVersions: TArray<string>;
   AInstalled: TDelphiVersionList): TArray<string>;
@@ -483,7 +483,8 @@ begin
   end;
 end;
 
-procedure TRestoreEngine.Open(const ASource: string);
+procedure TRestoreEngine.Open(const ASource: string;
+  const AProgress: TProgressProc);
 var
   Root, Extracted, Candidate: string;
   Dirs: TArray<string>;
@@ -492,6 +493,8 @@ begin
   FLogger.Info('Abrindo backup: ' + ASource);
   Extracted := '';
   try
+    if Assigned(AProgress) then
+      AProgress(0, 0, 'Abrindo backup...');
     Root := ExpandFileName(ASource);
     if not DirectoryExists(Root) then
     begin
@@ -499,7 +502,7 @@ begin
         raise EDelphiBackupError.Create('Fonte do backup não encontrada: '
           + ASource);
       Extracted := CreateTempDirectory('DelphiBackupRestore_');
-      if not FRunner.UnzipTo(Root, Extracted) then
+      if not ExtractBackupZip(Root, Extracted, FRunner, FLogger, AProgress) then
         raise EDelphiBackupError.Create('Falha ao extrair o backup.');
       Root := Extracted;
       if not FileExists(TPath.Combine(Root, BACKUP_MANIFEST_FILE)) then
@@ -520,6 +523,8 @@ begin
         Root := Candidate;
       end;
     end;
+    if Assigned(AProgress) then
+      AProgress(0, 0, 'Lendo manifesto...');
     if PathHasReparsePoint(TPath.Combine(Root, BACKUP_MANIFEST_FILE)) then
       raise EDelphiBackupError.Create
         ('Caminho inválido para o manifesto: ' + Root);
@@ -538,7 +543,10 @@ begin
       if (Extracted <> '') and not DeleteTree(Extracted) then
         FLogger.Warn('Não foi possível remover a pasta temporária: ' +
           Extracted);
-      FLogger.Error('Falha ao abrir backup: ' + E.Message);
+      if E is EAbort then
+        FLogger.Info('Abertura do backup cancelada.')
+      else
+        FLogger.Error('Falha ao abrir backup: ' + E.Message);
       raise;
     end;
   end;

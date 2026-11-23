@@ -18,6 +18,7 @@ function GetFileVersionText(const AFileName: string): string;
 function GetFileCompany(const AFileName: string): string;
 function CompareVersionText(const A, B: string): Integer;
 function IsAbsoluteFileSystemPath(const APath: string): Boolean;
+function LongPathPrefix(const APath: string): string;
 function PathHasReparsePoint(const APath: string): Boolean;
 function NormalizePath(const APath: string): string;
 function IsPathInside(const APath, AParent: string): Boolean;
