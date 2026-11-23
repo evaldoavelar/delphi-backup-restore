@@ -7,17 +7,13 @@ uses
 
 function CreateDllScanner(const ALogger: ILogger): IDllScanner;
 function ReadPeImports(const AFileName: string; AImports: TStrings): Boolean;
+function ReadPeMachine(const AFileName: string): Word;
 
 implementation
 
 uses
   Winapi.Windows, System.SysUtils, System.IOUtils, System.StrUtils,
   Core.SystemUtils, Core.Logger;
-
-function DisableWow64Redirection(var AOldValue: Pointer): BOOL; stdcall;
-  external 'kernel32.dll' name 'Wow64DisableWow64FsRedirection';
-function RevertWow64Redirection(AOldValue: Pointer): BOOL; stdcall;
-  external 'kernel32.dll' name 'Wow64RevertWow64FsRedirection';
 
 type
   TPeSection = record
@@ -35,6 +31,7 @@ type
     function U16(AOffset: Int64): Word;
     function U32(AOffset: Int64): Cardinal;
     function U64(AOffset: Int64): UInt64;
+    function NtHeaderOffset: Int64;
     function MapRva(ARva: Cardinal; ASize: Cardinal): Int64;
     function ImportName(ARva: Cardinal): string;
     procedure ReadDirectory(ARva, ASize: Cardinal; ADelay: Boolean;
@@ -211,6 +208,18 @@ begin
   raise EReadError.Create('Diretório de importações sem descritor terminador.');
 end;
 
+function TPeReader.NtHeaderOffset: Int64;
+begin
+  if U16(0) <> $5A4D then
+    raise EReadError.Create('Assinatura DOS inválida.');
+  Result := U32($3C);
+  if Result < $40 then
+    raise EReadError.Create('Deslocamento de cabeçalho PE inválido.');
+  if U32(Result) <> $00004550 then
+    raise EReadError.Create('Assinatura PE inválida.');
+  Check(Result, 24);
+end;
+
 procedure TPeReader.ReadImports(AImports: TStrings);
 var
   Nt, Optional, Sections, Dirs: Int64;
@@ -218,14 +227,7 @@ var
   NumberDirs, ImportRva, ImportSize, DelayRva, DelaySize: Cardinal;
   I: Integer;
 begin
-  if U16(0) <> $5A4D then
-    raise EReadError.Create('Assinatura DOS inválida.');
-  Nt := U32($3C);
-  if Nt < $40 then
-    raise EReadError.Create('Deslocamento de cabeçalho PE inválido.');
-  if U32(Nt) <> $00004550 then
-    raise EReadError.Create('Assinatura PE inválida.');
-  Check(Nt, 24);
+  Nt := NtHeaderOffset;
   Count := U16(Nt + 6);
   if (Count = 0) or (Count > 4096) then
     raise EReadError.Create('Número de seções PE inválido.');
@@ -324,6 +326,28 @@ var
   Is64: Boolean;
 begin
   Result := ReadPeImportsLogged(AFileName, AImports, CreateLogger, Is64);
+end;
+
+function ReadPeMachine(const AFileName: string): Word;
+var
+  Reader: TPeReader;
+  L: ILogger;
+begin
+  L := CreateLogger;
+  L.Debug('Lendo arquitetura PE: ' + AFileName);
+  Result := 0;
+  try
+    Reader := TPeReader.Create(AFileName);
+    try
+      Result := Reader.U16(Reader.NtHeaderOffset + 4);
+      L.Debug('Arquitetura PE: ' + IntToHex(Result, 4));
+    finally
+      Reader.Free;
+    end;
+  except
+    on E: Exception do
+      L.Warn('Não foi possível ler a arquitetura PE de ' + AFileName + ': ' + E.Message);
+  end;
 end;
 
 function CreateDllScanner(const ALogger: ILogger): IDllScanner;
@@ -439,20 +463,20 @@ begin
     (Pos('/', AName) > 0) or (AName = '.') or (AName = '..') then
     Exit;
   Candidate := TPath.Combine(ExtractFileDir(AParentFile), AName);
-  if FileExists(Candidate) then
+  if FileExists(RealFileSystemPath(Candidate)) then
     Exit(Candidate);
   Dir := GetSystem32Dir;
   if not AIs64 and (GetSysWow64Dir <> '') then
     Dir := GetSysWow64Dir;
   Candidate := TPath.Combine(Dir, AName);
-  if FileExists(Candidate) then
+  if FileExists(RealFileSystemPath(Candidate)) then
     Exit(Candidate);
   for Dir in FSearchDirs do
   begin
     if FSystemDirs.IndexOf(ExcludeTrailingPathDelimiter(Dir)) >= 0 then
       Continue;
     Candidate := TPath.Combine(Dir, AName);
-    if FileExists(Candidate) then
+    if FileExists(RealFileSystemPath(Candidate)) then
       Exit(Candidate);
   end;
 end;
@@ -470,7 +494,7 @@ begin
         Item.DllOrigin := doDependency;
       Exit;
     end;
-    Company := Trim(GetFileCompany(AFileName));
+    Company := Trim(GetFileCompany(RealFileSystemPath(AFileName)));
     Lower := LowerCase(Company);
     if (Pos('microsoft', Lower) > 0) and
       (FSystemDirs.IndexOf(ExcludeTrailingPathDelimiter
@@ -487,7 +511,7 @@ begin
       Item.Selected := False;
       Item.Description := 'DLL de terceiros: ' + ExtractFileName(AFileName);
       Item.Company := Company;
-      Item.FileVersion := GetFileVersionText(AFileName);
+      Item.FileVersion := GetFileVersionText(RealFileSystemPath(AFileName));
       Item.DllOrigin := AOrigin;
       Item.ReinstalledByIde := (Pos('borland', Lower) > 0) or
         (Pos('codegear', Lower) > 0) or (Pos('embarcadero', Lower) > 0);
@@ -514,7 +538,7 @@ begin
   FVisited.Add(AFileName);
   Imports := TStringList.Create;
   try
-    if not ReadPeImportsLogged(AFileName, Imports, FLogger, Is64) then
+    if not ReadPeImportsLogged(RealFileSystemPath(AFileName), Imports, FLogger, Is64) then
       Exit;
     for Name in Imports do
     begin
@@ -527,7 +551,7 @@ begin
           + AFileName + ').');
         Continue;
       end;
-      Company := GetFileCompany(Resolved);
+      Company := GetFileCompany(RealFileSystemPath(Resolved));
       if System.StrUtils.ContainsText(Company, 'Microsoft') and
         (FSystemDirs.IndexOf(ExcludeTrailingPathDelimiter
         (ExtractFileDir(Resolved))) >= 0) then
@@ -546,12 +570,13 @@ procedure TDllScanner.ScanSystemDirectory(const ADirectory: string);
 var
   Search: TSearchRec;
   Code: Integer;
-  Ext: string;
+  Ext, PhysicalDir: string;
 begin
-  if not DirectoryExists(ADirectory) then
+  PhysicalDir := RealFileSystemPath(ADirectory);
+  if not DirectoryExists(PhysicalDir) then
     Exit;
   FLogger.Info('Procurando DLLs de terceiros em ' + ADirectory);
-  Code := FindFirst(IncludeTrailingPathDelimiter(ADirectory) + '*',
+  Code := FindFirst(IncludeTrailingPathDelimiter(PhysicalDir) + '*',
     faAnyFile, Search);
   if Code <> 0 then
   begin
@@ -585,13 +610,8 @@ var
   Dir, PathEntry, FileName: string;
   Paths: TStringList;
   I: Integer;
-  IsWow: BOOL;
-  OldRedirection: Pointer;
-  RedirectDisabled: Boolean;
 begin
   FLogger.Info('Iniciando varredura de DLLs (somente leitura).');
-  RedirectDisabled := False;
-  OldRedirection := nil;
   try
     try
       if AResult = nil then
@@ -602,14 +622,6 @@ begin
       FSystemDirs.Clear;
       FSearchDirs.Clear;
       FVisited.Clear;
-      IsWow := False;
-      IsWow64Process(GetCurrentProcess, IsWow);
-      if IsWow then
-      begin
-        RedirectDisabled := DisableWow64Redirection(OldRedirection);
-        if not RedirectDisabled then
-          RaiseLastOSError;
-      end;
       Dir := GetSystem32Dir;
       if Dir <> '' then
         FSystemDirs.Add(Dir);
@@ -641,7 +653,7 @@ begin
               ikFolder:
                 CollectFiles(Item.SourcePath, True, True);
               ikFile:
-                if FileExists(Item.SourcePath) then
+                if FileExists(RealFileSystemPath(Item.SourcePath)) then
                 begin
                   FFiles.Add(Item.SourcePath);
                   FCoveredNames.Add(ExtractFileName(Item.SourcePath));
@@ -685,8 +697,6 @@ begin
         FLogger.Error('Falha na varredura de DLLs: ' + E.Message);
     end;
   finally
-    if RedirectDisabled and not RevertWow64Redirection(OldRedirection) then
-      FLogger.Error('Falha ao reativar redirecionamento WOW64 após varredura.');
     FResult := nil;
   end;
 end;

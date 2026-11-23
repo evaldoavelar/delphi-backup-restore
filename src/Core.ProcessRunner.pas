@@ -9,7 +9,7 @@ function CreateProcessRunner(const ALogger: ILogger): IProcessRunner;
 implementation
 
 uses
-  Core.SystemUtils,
+  Core.SystemUtils, Core.Logger,
   System.SysUtils, System.Classes, System.StrUtils, System.Win.Registry,
   Winapi.Windows;
 
@@ -44,6 +44,9 @@ constructor TProcessRunner.Create(const ALogger: ILogger);
 begin
   inherited Create;
   FLogger := ALogger;
+  if FLogger = nil then
+    FLogger := CreateLogger;
+  FLogger.Debug('Criando executor de processos.');
 end;
 
 function TProcessRunner.Quote(const S: string): string;
@@ -174,6 +177,20 @@ begin
   end;
 end;
 
+function QuoteCopyExclusion(const AMask: string): string;
+var
+  C: Char;
+  Mask: string;
+begin
+  Mask := ExcludeTrailingPathDelimiter(AMask);
+  if (Trim(Mask) = '') or CharInSet(Mask[1], ['/', '-']) then
+    raise EDelphiBackupError.Create('Exclusão de cópia inválida: ' + AMask);
+  for C in Mask do
+    if CharInSet(C, [#0..#31, '"']) then
+      raise EDelphiBackupError.Create('Exclusão de cópia inválida.');
+  Result := '"' + Mask + '"';
+end;
+
 function TProcessRunner.CopyTree(const ASource, ADest: string; AMirror: Boolean;
   AExcludeDirs, AExcludeFiles: TStrings): Boolean;
 var
@@ -190,13 +207,13 @@ begin
   begin
     Args := Args + ' /XD';
     for I := 0 to AExcludeDirs.Count - 1 do
-      Args := Args + ' ' + Quote(AExcludeDirs[I]);
+      Args := Args + ' ' + QuoteCopyExclusion(AExcludeDirs[I]);
   end;
   if Assigned(AExcludeFiles) and (AExcludeFiles.Count > 0) then
   begin
     Args := Args + ' /XF';
     for I := 0 to AExcludeFiles.Count - 1 do
-      Args := Args + ' ' + Quote(AExcludeFiles[I]);
+      Args := Args + ' ' + QuoteCopyExclusion(AExcludeFiles[I]);
   end;
   Code := Run('robocopy.exe', Args, '', Output);
   Result := Code < 8;
@@ -206,9 +223,26 @@ end;
 
 function TProcessRunner.CopyFile(const ASourceFile, ADestDir: string): Boolean;
 var
-  Args, Output: string;
+  Args, Output, NativeDir: string;
   Code: Cardinal;
 begin
+  NativeDir := RealFileSystemPath(GetSystem32Dir);
+  { Sysnative is visible only to WOW64 callers. Keep this I/O in-process so
+    an external utility's bitness cannot change which file it accesses. }
+  if not SameText(NativeDir, GetSystem32Dir) and
+    (IsPathInside(ASourceFile, NativeDir) or IsPathInside(ADestDir, NativeDir)) then
+  begin
+    FLogger.Debug('Copiando arquivo pelo acesso nativo: ' + ASourceFile);
+    Result := ForceDirectories(ADestDir) and Winapi.Windows.CopyFile(
+      PChar(ASourceFile), PChar(IncludeTrailingPathDelimiter(ADestDir) +
+      ExtractFileName(ASourceFile)), False);
+    if Result then
+      FLogger.Debug('Arquivo copiado para ' + ADestDir)
+    else
+      FLogger.Warn('Falha ao copiar arquivo para ' + ADestDir + ': ' +
+        SysErrorMessage(GetLastError));
+    Exit;
+  end;
   Args := Quote(ExtractFilePath(ASourceFile)) + ' ' + Quote(ADestDir) + ' ' +
     Quote(ExtractFileName(ASourceFile)) + ' /COPY:DAT /R:1 /W:1';
   Code := Run('robocopy.exe', Args, '', Output);
@@ -249,7 +283,7 @@ end;
 
 function TProcessRunner.RegDelete(const AKey: string): Boolean;
 var
-  Output: string;
+  Args, Output: string;
   Code: Cardinal;
 begin
   if not RegKeyExists(AKey) then
@@ -258,7 +292,10 @@ begin
       FLogger.Debug('A chave do Registro já não existe: ' + AKey);
     Exit(True);
   end;
-  Code := Run('reg.exe', 'delete ' + Quote(AKey) + ' /f', '', Output);
+  Args := 'delete ' + Quote(AKey) + ' /f';
+  if StartsText('HKLM', AKey) then
+    Args := Args + ' /reg:32';
+  Code := Run('reg.exe', Args, '', Output);
   Result := Code = 0;
   if not Result and Assigned(FLogger) then
     FLogger.Warn('A remoção da chave falhou: ' + Output);
@@ -269,8 +306,10 @@ var
   Reg: TRegistry;
   Key: string;
   Root: HKEY;
+  Access: LongWord;
 begin
   Key := AKey;
+  Access := KEY_READ;
   Root := 0;
   if StartsText('HKCU\', Key) then
   begin
@@ -280,6 +319,7 @@ begin
   else if StartsText('HKLM\', Key) then
   begin
     Root := HKEY_LOCAL_MACHINE;
+    Access := Access or KEY_WOW64_32KEY;
     Delete(Key, 1, 5);
   end;
   Result := False;
@@ -289,7 +329,7 @@ begin
       FLogger.Warn('Raiz do Registro inválida: ' + AKey);
     Exit;
   end;
-  Reg := TRegistry.Create(KEY_READ);
+  Reg := TRegistry.Create(Access);
   try
     Reg.RootKey := Root;
     Result := Reg.OpenKeyReadOnly(Key);

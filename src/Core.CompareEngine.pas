@@ -20,8 +20,8 @@ function DiffManifests(ABackup, ACurrent: TManifest;
 
 implementation
 
-uses System.SysUtils, System.IOUtils, System.Classes, Winapi.Windows,
-  Core.Manifest, Core.SystemUtils;
+uses System.SysUtils, System.IOUtils, System.Classes,
+  Core.Manifest, Core.SystemUtils, Core.Logger;
 
 function Remap(const P, OldProfile, NewProfile: string): string;
 var
@@ -76,7 +76,10 @@ var
   B, M: TManifestItem;
   F, G: TManifestFile;
   P: string;
+  L: ILogger;
 begin
+  L := CreateLogger;
+  L.Debug('Comparando manifestos.');
   Result := TCompareResult.Create;
   try
     for V in ABackup.Versions do
@@ -127,6 +130,7 @@ begin
         if FindFile(B, F.RelPath) = nil then
           Result.Add(dkAdded, B.Item.Id, F.RelPath, 'Arquivo adicionado');
     end;
+    L.Debug(Format('Comparação de manifestos concluída: %d diferenças.', [Result.Entries.Count]));
   except
     Result.Free;
     raise;
@@ -148,6 +152,7 @@ var
   Root, Temp, P: string;
   B, C: TManifest;
   Items: TBackupItemList;
+  Exclusions: TToolConfig;
   It: TBackupItem;
   M: TManifestItem;
   Dirs: TArray<string>;
@@ -159,15 +164,13 @@ begin
   C := nil;
   Items := TBackupItemList.Create(True);
   Temp := '';
+  Exclusions := nil;
   try
     try
       Root := AOptions.Source;
-      Temp := TPath.Combine(TPath.GetTempPath,
-        Format('DelphiBackupRestore_compare_%d_%d', [GetCurrentProcessId,
-        GetTickCount]));
-      TDirectory.CreateDirectory(Temp);
       if SameText(ExtractFileExt(Root), '.zip') then
       begin
+        Temp := CreateTempDirectory('DelphiBackupRestore_compare_');
         if not FRunner.UnzipTo(Root, Temp) then
           raise EDelphiBackupError.Create('Falha ao extrair backup.');
         Dirs := TDirectory.GetDirectories(Temp);
@@ -175,8 +178,16 @@ begin
           raise EDelphiBackupError.Create
             ('Arquivo ZIP não contém uma única pasta de backup.');
         Root := Dirs[0];
+        if PathHasReparsePoint(TPath.Combine(Root, BACKUP_MANIFEST_FILE)) then
+          raise EDelphiBackupError.Create('Caminho inválido dentro do ZIP: ' + Root);
       end;
       B := LoadManifest(TPath.Combine(Root, BACKUP_MANIFEST_FILE));
+      if B.HasExclusions then
+      begin
+        Exclusions := TToolConfig.Create;
+        Exclusions.ExcludeDirs.Assign(B.ExcludeDirs);
+        Exclusions.ExcludeFiles.Assign(B.ExcludeFiles);
+      end;
       for M in B.Items do
       begin
         if not Applicable(M.Item, AOptions.Versions) then
@@ -189,7 +200,7 @@ begin
         It.SourcePath := Remap(M.Item.SourcePath, B.SourceUserProfile,
           GetUserProfileDir);
         if ((It.Kind = ikFolder) and not DirectoryExists(It.SourcePath)) or
-          ((It.Kind in [ikFile, ikDll]) and not FileExists(It.SourcePath)) or
+          ((It.Kind in [ikFile, ikDll]) and not FileExists(RealFileSystemPath(It.SourcePath))) or
           ((It.Kind = ikRegistry) and not FRunner.RegKeyExists(It.SourcePath))
         then
         begin
@@ -207,6 +218,8 @@ begin
       for It in Items do
         if It.Kind = ikRegistry then
         begin
+          if Temp = '' then
+            Temp := CreateTempDirectory('DelphiBackupRestore_compare_');
           Inc(Index);
           P := TPath.Combine(Temp, Format('registro_%d.reg', [Index]));
           if FRunner.RegKeyExists(It.SourcePath) and
@@ -214,6 +227,8 @@ begin
             raise EDelphiBackupError.Create('Falha ao exportar registro: ' +
               It.SourcePath);
         end;
+      if Exclusions = nil then
+        Exclusions := AConfig;
       Index := 0;
       C := BuildEnvironmentManifest(AInstalled, Items,
         function(AItem: TBackupItem): string
@@ -224,8 +239,8 @@ begin
             Result := TPath.Combine(Temp, Format('registro_%d.reg', [Index]));
           end
           else
-            Result := AItem.SourcePath;
-        end, AConfig, FLogger, ManifestFailures);
+            Result := RealFileSystemPath(AItem.SourcePath);
+        end, Exclusions, FLogger, ManifestFailures);
       if ManifestFailures > 0 then
         FLogger.Warn(Format('Manifesto atual contém %d itens com falha.',
           [ManifestFailures]));
@@ -243,13 +258,10 @@ begin
     C.Free;
     B.Free;
     Items.Free;
-    if (Temp <> '') and TDirectory.Exists(Temp) then
-      try
-        TDirectory.Delete(Temp, True);
-      except
-        on E: Exception do
-          FLogger.Warn('Falha ao remover arquivos temporários: ' + E.Message);
-      end;
+    if Exclusions <> AConfig then
+      Exclusions.Free;
+    if (Temp <> '') and not DeleteTree(Temp) then
+      FLogger.Warn('Não foi possível remover a pasta temporária: ' + Temp);
   end;
 end;
 

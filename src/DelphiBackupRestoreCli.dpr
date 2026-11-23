@@ -17,6 +17,7 @@ uses
   Core.VersionCatalog in 'Core.VersionCatalog.pas',
   Core.VersionDetector in 'Core.VersionDetector.pas',
   Core.PathDiscovery in 'Core.PathDiscovery.pas',
+  Core.Hash in 'Core.Hash.pas',
   Core.Manifest in 'Core.Manifest.pas',
   Core.BackupEngine in 'Core.BackupEngine.pas',
   Core.CompareEngine in 'Core.CompareEngine.pas',

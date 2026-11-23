@@ -8,6 +8,7 @@ uses
   System.IOUtils,
   DUnitX.TestFramework,
   Core.Types,
+  Core.SystemUtils,
   Core.Manifest;
 
 type
@@ -31,10 +32,10 @@ var
   V: TManifestVersion;
   MI: TManifestItem;
   MF: TManifestFile;
-  TempFile: string;
+  TempDir, TempFile: string;
 begin
-  TempFile := TPath.Combine(TPath.GetTempPath, 'dbr_manifest_test_' +
-    TGUID.NewGuid.ToString + '.json');
+  TempDir := CreateTempDirectory('dbr_manifest_test_');
+  TempFile := TPath.Combine(TempDir, 'manifest.json');
   try
     M1 := TManifest.Create;
     try
@@ -114,8 +115,7 @@ begin
       M2.Free;
     end;
   finally
-    if TFile.Exists(TempFile) then
-      TFile.Delete(TempFile);
+    DeleteTree(TempDir);
   end;
 end;
 

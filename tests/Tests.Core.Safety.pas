@@ -104,9 +104,7 @@ procedure TTestCoreSafety.Setup;
 var
   V: TDelphiVersion;
 begin
-  FTemp := IncludeTrailingPathDelimiter(TPath.GetTempPath) + 'dbr-tests-' +
-    IntToStr(GetCurrentProcessId) + '-' + IntToStr(GetTickCount);
-  MakeDir(FTemp);
+  FTemp := CreateTempDirectory('dbr-tests-');
   FVersions := TDelphiVersionList.Create(True);
   V := TDelphiVersion.Create;
   V.BdsVersion := '22.0';
@@ -441,7 +439,8 @@ begin
       Safety.ComponentRoot('C:\SomeLibs\Vendor\src\win32'));
     Assert.IsTrue(Safety.IsContainer('C:'), 'drive-relative C: is a container');
     Assert.IsTrue(Safety.IsContainer('C:\'), 'drive root');
-    Assert.AreEqual('', Safety.ComponentRoot('C:'), 'drive-relative path rejected');
+    Assert.AreEqual('', Safety.ComponentRoot('C:'),
+      'drive-relative path rejected');
     Assert.AreEqual('', Safety.ComponentRoot('relative\path'),
       'relative path rejected');
   finally

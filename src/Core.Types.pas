@@ -199,6 +199,9 @@ type
     // e.g. 'C:\Users\Desenvolvimento' (for path remapping)
     SourcePublicDir: string; // e.g. 'C:\Users\Public'
     UserPath: string; // user PATH environment variable at backup time
+    HasExclusions: Boolean; // both exclusion fields were recorded
+    ExcludeDirs: TStringList; // owned
+    ExcludeFiles: TStringList; // owned
     Versions: TObjectList<TManifestVersion>; // owned
     Items: TObjectList<TManifestItem>; // owned
     constructor Create;
@@ -456,12 +459,16 @@ constructor TManifest.Create;
 begin
   inherited Create;
   FormatVersion := MANIFEST_FORMAT_VERSION;
+  ExcludeDirs := TStringList.Create;
+  ExcludeFiles := TStringList.Create;
   Versions := TObjectList<TManifestVersion>.Create(True);
   Items := TObjectList<TManifestItem>.Create(True);
 end;
 
 destructor TManifest.Destroy;
 begin
+  ExcludeFiles.Free;
+  ExcludeDirs.Free;
   Items.Free;
   Versions.Free;
   inherited;
