@@ -101,6 +101,15 @@ begin
   GProgressWidth := Length(AText);
 end;
 
+procedure ShowOpenBackupProgress(ACurrent, ATotal: Integer;
+  const AStep: string);
+begin
+  if ATotal > 0 then
+    ShowZipProgress(AStep)
+  else
+    Say(AStep);
+end;
+
 procedure ShowHelp;
 begin
   Say('Delphi Backup & Restore ' + ToolVersion);
@@ -538,14 +547,7 @@ begin
   Engine := TRestoreEngine.Create(ALogger, CreateProcessRunner(ALogger));
   try
     CreateVersionDetector(ALogger).Detect(Installed);
-    Engine.Open(AOpts.Source,
-      procedure(ACurrent, ATotal: Integer; const AStep: string)
-      begin
-        if ATotal > 0 then
-          ShowZipProgress(AStep)
-        else
-          Say(AStep);
-      end);
+    Engine.Open(AOpts.Source, ShowOpenBackupProgress);
     Options.Source := AOpts.Source;
     Options.Versions := AOpts.Versions;
     if AOpts.CategoriesGiven then
@@ -602,7 +604,7 @@ begin
     CreateVersionDetector(ALogger).Detect(Installed);
     Options.Source := AOpts.Source;
     Options.Versions := AOpts.Versions;
-    Res := Engine.Execute(Options, Installed, Config);
+    Res := Engine.Execute(Options, Installed, Config, ShowOpenBackupProgress);
     try
       for E in Res.Entries do
       begin

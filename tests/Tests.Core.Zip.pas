@@ -44,6 +44,8 @@ type
     [Test]
     procedure TarExtractionReportsCompletedFiles;
     [Test]
+    procedure CompareReportsZipProgressBeforeReadingManifest;
+    [Test]
     procedure ExtractionFailureCleansTempAndDoesNotReportCompletion;
     [Test]
     procedure CancelsChildWhileItIsNotWritingOutput;
@@ -66,8 +68,8 @@ implementation
 uses
   System.SysUtils, System.Classes, System.Generics.Collections, System.IOUtils,
   System.StrUtils, System.JSON, System.Zip, Winapi.Windows, Core.BackupEngine,
-  Core.ProcessRunner, Core.RestoreEngine, Core.SystemUtils, Core.ToolConfig,
-  Core.Zip;
+  Core.CompareEngine, Core.ProcessRunner, Core.RestoreEngine, Core.SystemUtils,
+  Core.ToolConfig, Core.Zip;
 
 procedure TTestZip.FormatsPortugueseZipEta;
 const
@@ -340,6 +342,49 @@ end;
 procedure TTestZip.TarExtractionReportsCompletedFiles;
 begin
   CheckExtractionProgress(True);
+end;
+
+procedure TTestZip.CompareReportsZipProgressBeforeReadingManifest;
+var
+  Fake: TExtractRunner;
+  Engine: TCompareEngine;
+  Options: Core.Types.TCompareOptions;
+  Diff: TCompareResult;
+  Stages: TStringList;
+begin
+  FManifest.Versions[0].BdsVersion := '99.0';
+  Options := Default (Core.Types.TCompareOptions);
+  Options.Source := PrepareZip;
+  Fake := TExtractRunner.Create;
+  Fake.ZipManifest := FFake.ZipManifest;
+  Fake.ForceTar := True;
+  Engine := TCompareEngine.Create(FLogger, Fake);
+  Stages := TStringList.Create;
+  try
+    Diff := Engine.Execute(Options, FInstalled, nil,
+      procedure(ACurrent, ATotal: Integer; const AStep: string)
+      begin
+        Stages.Add(AStep);
+      end);
+    try
+      Assert.AreEqual(1, Diff.Entries.Count);
+      Assert.AreEqual('99.0', Diff.Entries[0].Path);
+    finally
+      Diff.Free;
+    end;
+    Assert.AreEqual(6, Stages.Count);
+    Assert.AreEqual('Abrindo backup...', Stages[0]);
+    Assert.AreEqual('Listando arquivos do backup...', Stages[1]);
+    Assert.IsTrue(StartsStr('Extraindo backup: 0%', Stages[2]), Stages[2]);
+    Assert.IsTrue(StartsStr('Extraindo backup: 40% (6,0 de 15,0 GB)', Stages[3]
+      ), Stages[3]);
+    Assert.IsTrue(StartsStr('Extraindo backup: 100%', Stages[4]), Stages[4]);
+    Assert.AreEqual('Lendo manifesto...', Stages[5]);
+    Assert.IsFalse(DirectoryExists(Fake.Extracted));
+  finally
+    Stages.Free;
+    Engine.Free;
+  end;
 end;
 
 procedure TTestZip.ExtractionFailureCleansTempAndDoesNotReportCompletion;

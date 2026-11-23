@@ -1396,19 +1396,24 @@ end;
 
 procedure TMainWizard.QueueProgress(ACurrent, ATotal: Integer;
 const AStatus: string);
+var
+  Status: string;
 begin
   { called from the worker thread }
+  Status := AStatus;
   TThread.Queue(nil, procedure
     begin
       if FClosing then
         Exit;
-      FProgress.Style := pbstNormal;
       if ATotal > 0 then
       begin
+        FProgress.Style := pbstNormal;
         FProgress.Max := ATotal;
         FProgress.Position := ACurrent;
-      end;
-      FLblStatus.Caption := AStatus;
+      end
+      else
+        FProgress.Style := pbstMarquee;
+      FLblStatus.Caption := Status;
     end);
 end;
 
@@ -1580,7 +1585,7 @@ begin
     begin
       Engine := TCompareEngine.Create(FLogger, FRunner);
       try
-        Res := Engine.Execute(Options, FInstalled, FConfig);
+        Res := Engine.Execute(Options, FInstalled, FConfig, QueueProgress);
         try
           for E in Res.Entries do
           begin

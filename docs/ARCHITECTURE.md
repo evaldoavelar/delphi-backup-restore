@@ -283,8 +283,9 @@ type
   public
     constructor Create(const ALogger: ILogger; const ARunner: IProcessRunner);
     function Execute(const AOptions: TCompareOptions; AInstalled: TDelphiVersionList;
-      AConfig: TToolConfig): TCompareResult;
-      // abre a fonte sozinho: pasta direto ou zip via ARunner.UnzipTo em %TEMP%; LoadManifest;
+      AConfig: TToolConfig; const AProgress: TProgressProc = nil): TCompareResult;
+      // abre a fonte: pasta direto ou ZIP via ExtractBackupZip em %TEMP%.
+      // O callback recebe as etapas de abertura, extração e leitura do manifesto.
       // NÃO depende de Core.RestoreEngine. Manifest atual via BuildEnvironmentManifest com os itens do
       // backup (SourcePath remapeado para o perfil atual) e resolver = caminho original.
   end;
