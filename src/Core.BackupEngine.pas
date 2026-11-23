@@ -17,7 +17,8 @@ type
     constructor Create(const ALogger: ILogger; const ARunner: IProcessRunner);
     function Execute(const AOptions: TBackupOptions;
       AVersions: TDelphiVersionList; AItems: TBackupItemList;
-      AConfig: TToolConfig; const AProgress: TProgressProc): string;
+      AConfig: TToolConfig; const AProgress: TProgressProc;
+      const AZipProgress: TProgressProc = nil): string;
     { Items that could not be copied/exported in the last Execute (0 = complete backup). }
     property FailureCount: Integer read FFailureCount;
   end;
@@ -37,8 +38,8 @@ implementation
 
 uses System.Classes, System.IOUtils, System.StrUtils, Winapi.Windows,
   Core.SystemUtils,
-  Core.Manifest, Core.PathDiscovery, Core.VersionDetector, Core.ProcessRunner,
-  Core.Logger;
+  Core.Manifest, Core.PathDiscovery, Core.VersionDetector,
+  Core.Logger, Core.Zip;
 
 function ItemInScope(AItem: TBackupItem; const AOptions: TBackupOptions;
   AVersions: TDelphiVersionList): Boolean;
@@ -159,7 +160,7 @@ end;
 procedure TBackupEngine.RemoveFolderAfterZip(const AFolder, AZip,
   ADestination: string);
 var
-  Folder, Name, Prefix, Output, Line, Entry: string;
+  Folder, Name, Prefix, Line, Entry: string;
   InFolder, InZip, Lines: TStringList;
   I: Integer;
   Matches: Boolean;
@@ -186,11 +187,10 @@ begin
     InZip.Duplicates := dupIgnore;
     InZip.Sorted := True;
     Matches := ListFilesInTree(Folder, InFolder) and
-      (FRunner.Run('tar.exe', '-t -f ' + Quote(AZip), '', Output) = 0);
+      ListBackupZip(AZip, FRunner, FLogger, Lines);
     if Matches then
     begin
       Prefix := Name + '\';
-      Lines.Text := Output;
       for Line in Lines do
       begin
         if (Line = '') or StartsText('tar:', Line) then
@@ -232,7 +232,7 @@ end;
 
 function TBackupEngine.Execute(const AOptions: TBackupOptions;
   AVersions: TDelphiVersionList; AItems: TBackupItemList; AConfig: TToolConfig;
-  const AProgress: TProgressProc): string;
+  const AProgress, AZipProgress: TProgressProc): string;
 var
   Root, Dest, Zip, S: string;
   It: TBackupItem;
@@ -418,7 +418,8 @@ begin
           be deleted; later messages still reach the console/GUI sinks }
         FLogger.SetLogFile('');
         Zip := Root + '.zip';
-        if not FRunner.ZipFolder(Root, Zip) then
+        if not CreateBackupZip(Root, Zip, AOptions.ZipStore, FRunner, FLogger,
+          AZipProgress) then
           raise EDelphiBackupError.Create('Falha ao compactar backup.');
         Result := Zip;
         if not AOptions.KeepFolder then

@@ -15,7 +15,7 @@ uses
   Core.Types, Core.Logger, Core.ProcessRunner, Core.SystemUtils,
   Core.VersionDetector,
   Core.PathDiscovery, Core.BackupEngine, Core.CompareEngine, Core.RestoreEngine,
-  Core.DllScanner;
+  Core.DllScanner, Core.ToolConfig;
 
 type
   TCliOptions = record
@@ -24,6 +24,7 @@ type
     Dest: string;
     Source: string;
     NoZip: Boolean;
+    ZipStore: Boolean;
     ScanDlls: Boolean;
     DryRun: Boolean;
     KeepFolder: Boolean;
@@ -34,6 +35,7 @@ type
 
 var
   GOut: THandle = 0;
+  GProgressWidth: Integer = 0;
 
 procedure ConsoleInit;
 var
@@ -67,12 +69,36 @@ begin
     Exit;
   Line := AText + #13#10;
   if GetConsoleMode(GOut, Mode) then
-    WriteConsole(GOut, PChar(Line), Length(Line), Written, nil)
+  begin
+    if GProgressWidth > 0 then
+    begin
+      Line := #13#10 + Line;
+      GProgressWidth := 0;
+    end;
+    WriteConsole(GOut, PChar(Line), Length(Line), Written, nil);
+  end
   else
   begin
     U8 := UTF8String(Line);
     WriteFile(GOut, PAnsiChar(U8)^, Length(U8), Written, nil);
   end;
+end;
+
+procedure ShowZipProgress(const AText: string);
+var
+  Line: string;
+  Mode, Written: DWORD;
+begin
+  if not GetConsoleMode(GOut, Mode) then
+  begin
+    Say(AText);
+    Exit;
+  end;
+  Line := #13 + AText;
+  if GProgressWidth > Length(AText) then
+    Line := Line + StringOfChar(' ', GProgressWidth - Length(AText));
+  WriteConsole(GOut, PChar(Line), Length(Line), Written, nil);
+  GProgressWidth := Length(AText);
 end;
 
 procedure ShowHelp;
@@ -96,6 +122,7 @@ begin
   Say('  --dest <pasta>        Pasta onde o backup será criado');
   Say('  --source <pasta|zip>  Pasta ou .zip do backup');
   Say('  --no-zip              Não compactar o backup em .zip');
+  Say('  --zip-store           backup: cria .zip sem compressão (incompatível com --no-zip)');
   Say('  --scan-dlls           Incluir DLLs de terceiros encontradas no sistema');
   Say('  --dry-run             backup: só lista os itens e o tamanho estimado, sem copiar');
   Say('  --keep-folder         backup: mantém a pasta além do .zip (padrão: remove após conferir)');
@@ -148,6 +175,7 @@ begin
   AOpts.Dest := '';
   AOpts.Source := '';
   AOpts.NoZip := False;
+  AOpts.ZipStore := False;
   AOpts.ScanDlls := False;
   AOpts.DryRun := False;
   AOpts.KeepFolder := False;
@@ -212,6 +240,8 @@ begin
     end
     else if Name = '--no-zip' then
       AOpts.NoZip := True
+    else if (Name = '--zip-store') and (P = 0) then
+      AOpts.ZipStore := True
     else if Name = '--scan-dlls' then
       AOpts.ScanDlls := True
     else if Name = '--dry-run' then
@@ -224,6 +254,19 @@ begin
       Exit;
     end;
     Inc(I);
+  end;
+  if AOpts.ZipStore then
+  begin
+    if AOpts.Command <> 'backup' then
+    begin
+      Say('Erro: --zip-store só pode ser usada no comando backup.');
+      Exit;
+    end;
+    if AOpts.NoZip then
+    begin
+      Say('Erro: --zip-store é incompatível com --no-zip.');
+      Exit;
+    end;
   end;
   Result := True;
 end;
@@ -264,7 +307,7 @@ begin
   if FileExists(FileName) then
   begin
     ALogger.Info('Usando configuração: ' + FileName);
-    LoadToolConfig(FileName, Result, ALogger);
+    Core.ToolConfig.LoadToolConfig(FileName, Result, ALogger);
   end;
 end;
 
@@ -402,6 +445,8 @@ begin
     Options.Versions := Bds;
     Options.Destination := AOpts.Dest;
     Options.CreateZip := not AOpts.NoZip;
+    Options.ZipStore := Options.CreateZip and
+      (AOpts.ZipStore or Config.ZipStore);
     Options.KeepFolder := AOpts.KeepFolder;
     Options.ScanDlls := AOpts.ScanDlls;
     if AOpts.CategoriesGiven then
@@ -451,6 +496,9 @@ begin
         procedure(ACurrent, ATotal: Integer; const AStep: string)
         begin
           Say(Format('[%d/%d] %s', [ACurrent, ATotal, AStep]));
+        end, procedure(ACurrent, ATotal: Integer; const AStep: string)
+        begin
+          ShowZipProgress(AStep);
         end);
       Failures := Engine.FailureCount;
     finally

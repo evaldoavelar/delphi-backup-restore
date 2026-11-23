@@ -15,15 +15,21 @@ uses
   Winapi.Windows;
 
 type
-  TProcessRunner = class(TInterfacedObject, IProcessRunner)
+  TProcessRunner = class(TInterfacedObject, IProcessRunner,
+    IStreamingProcessRunner)
   private
     FLogger: ILogger;
-    function RunTool(const AExe, AArgs, AWorkDir: string; out AOutput: string)
+    function RunCommand(const AExe, AArgs, AWorkDir: string;
+      ACodePage: Cardinal; const AOnLine: TProcessLineProc; out AOutput: string)
       : Cardinal;
+    function RunTool(const AExe, AArgs, AWorkDir: string; ACodePage: Cardinal;
+      const AOnLine: TProcessLineProc; out AOutput: string): Cardinal;
   public
     constructor Create(const ALogger: ILogger);
     function Run(const AExe, AArgs, AWorkDir: string; out AOutput: string)
       : Cardinal;
+    function RunLines(const AExe, AArgs, AWorkDir: string; ACodePage: Cardinal;
+      const AOnLine: TProcessLineProc): Cardinal;
     function CopyTree(const ASource, ADest: string; AMirror: Boolean;
       AExcludeDirs, AExcludeFiles: TStrings): Boolean;
     function CopyFile(const ASourceFile, ADestDir: string): Boolean;
@@ -69,6 +75,21 @@ end;
 
 function TProcessRunner.Run(const AExe, AArgs, AWorkDir: string;
   out AOutput: string): Cardinal;
+begin
+  Result := RunCommand(AExe, AArgs, AWorkDir, GetOEMCP, nil, AOutput);
+end;
+
+function TProcessRunner.RunLines(const AExe, AArgs, AWorkDir: string;
+  ACodePage: Cardinal; const AOnLine: TProcessLineProc): Cardinal;
+var
+  Output: string;
+begin
+  Result := RunCommand(AExe, AArgs, AWorkDir, ACodePage, AOnLine, Output);
+end;
+
+function TProcessRunner.RunCommand(const AExe, AArgs, AWorkDir: string;
+  ACodePage: Cardinal; const AOnLine: TProcessLineProc; out AOutput: string)
+  : Cardinal;
 var
   Exe, SystemExe: string;
 begin
@@ -85,13 +106,14 @@ begin
   end;
   if Assigned(FLogger) then
     FLogger.Debug('Executando processo: ' + Exe + ' ' + AArgs);
-  Result := RunTool(Exe, AArgs, AWorkDir, AOutput);
+  Result := RunTool(Exe, AArgs, AWorkDir, ACodePage, AOnLine, AOutput);
   if Assigned(FLogger) then
     FLogger.Debug(Format('Processo finalizado com código %d', [Result]));
 end;
 
 function TProcessRunner.RunTool(const AExe, AArgs, AWorkDir: string;
-  out AOutput: string): Cardinal;
+  ACodePage: Cardinal; const AOnLine: TProcessLineProc; out AOutput: string)
+  : Cardinal;
 var
   Security: TSecurityAttributes;
   ReadPipe, WritePipe: THandle;
@@ -103,6 +125,40 @@ var
   RawOutput: TBytesStream;
   Encoding: TEncoding;
   WorkDir: PChar;
+
+  procedure EmitLine;
+  begin
+    if RawOutput.Size = 0 then
+      Exit;
+    try
+      AOnLine(Encoding.GetString(RawOutput.Bytes, 0, RawOutput.Size));
+    except
+      { Finish cancelling this child before the caller cleans up its output file. }
+      if TerminateProcess(ProcessInfo.hProcess, ERROR_CANCELLED) then
+        WaitForSingleObject(ProcessInfo.hProcess, INFINITE);
+      raise;
+    end;
+    RawOutput.Size := 0;
+    RawOutput.Position := 0;
+  end;
+
+  procedure ReadLines(ACount: Integer);
+  var
+    I, Start: Integer;
+  begin
+    Start := 0;
+    for I := 0 to ACount - 1 do
+      if Buffer[I] in [10, 13] then
+      begin
+        if I > Start then
+          RawOutput.WriteBuffer(Buffer[Start], I - Start);
+        EmitLine;
+        Start := I + 1;
+      end;
+    if Start < ACount then
+      RawOutput.WriteBuffer(Buffer[Start], ACount - Start);
+  end;
+
 begin
   AOutput := '';
   FillChar(Security, SizeOf(Security), 0);
@@ -136,8 +192,11 @@ begin
       RaiseLastOSError;
     CloseHandle(WritePipe);
     WritePipe := 0;
-    RawOutput := TBytesStream.Create;
+    RawOutput := nil;
+    Encoding := nil;
     try
+      RawOutput := TBytesStream.Create;
+      Encoding := TEncoding.GetEncoding(ACodePage);
       repeat
         if not PeekNamedPipe(ReadPipe, nil, 0, nil, @Available, nil) then
         begin
@@ -161,22 +220,23 @@ begin
           RaiseLastOSError;
         end;
         if ReadCount > 0 then
-          RawOutput.WriteBuffer(Buffer[0], ReadCount);
+          if Assigned(AOnLine) then
+            ReadLines(ReadCount)
+          else
+            RawOutput.WriteBuffer(Buffer[0], ReadCount);
       until False;
+      if Assigned(AOnLine) then
+        EmitLine;
       { The child can also close stdout before exiting. }
       if WaitForSingleObject(ProcessInfo.hProcess, INFINITE) <> WAIT_OBJECT_0
       then
         RaiseLastOSError;
       if not GetExitCodeProcess(ProcessInfo.hProcess, Result) then
         RaiseLastOSError;
-      { decode once, at the end, so multi-chunk output is never split mid-character }
-      Encoding := TEncoding.GetEncoding(GetOEMCP);
-      try
+      if not Assigned(AOnLine) then
         AOutput := Encoding.GetString(RawOutput.Bytes, 0, RawOutput.Size);
-      finally
-        Encoding.Free;
-      end;
     finally
+      Encoding.Free;
       RawOutput.Free;
       CloseHandle(ProcessInfo.hThread);
       CloseHandle(ProcessInfo.hProcess);
