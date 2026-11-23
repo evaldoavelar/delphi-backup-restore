@@ -11,7 +11,7 @@ interface
 
 uses
   Winapi.Windows, Winapi.Messages, Winapi.ShellAPI, System.SysUtils,
-  System.Classes,
+  System.Classes, System.SyncObjs,
   System.Generics.Collections,
   Vcl.Controls, Vcl.Forms, Vcl.StdCtrls, Vcl.ExtCtrls, Vcl.ComCtrls,
   Vcl.CheckLst, Vcl.Dialogs,
@@ -49,6 +49,9 @@ type
     FPage: TWizPage;
     FBusy: Boolean;
     FClosing: Boolean;
+    FOpeningSource: Boolean;
+    FCloseAfterOpen: Boolean;
+    FOpenCancel: TEvent;
     FDllsScanned: Boolean;
     FDestText: string;
     FSourceText: string;
@@ -76,6 +79,8 @@ type
     FEdtPath: TEdit;
     FBtnBrowse: TButton;
     FBtnBrowseZip: TButton;
+    FLblOpenStatus: TLabel;
+    FOpenProgress: TProgressBar;
     FChkZip: TCheckBox;
     FChkZipStore: TCheckBox;
     FChkKeepFolder: TCheckBox;
@@ -116,6 +121,12 @@ type
     procedure SavePathText;
     function ValidateAndLeave(APage: TWizPage): Boolean;
     function OpenSource: Boolean;
+    function OpenCancelled: Boolean;
+    procedure ShowOpenProgress(ACurrent, ATotal: Integer;
+      const AStatus: string);
+    procedure QueueOpenProgress(ACurrent, ATotal: Integer;
+      const AStatus: string);
+    procedure FinishClosingSource(const AError: string; APrecheck: Boolean);
     function CheckedCount(AList: TCheckListBox): Integer;
     function SelectedCategories: TItemCategories;
     function RestoreCategoryOf(AIndex: Integer): TItemCategory;
@@ -217,6 +228,7 @@ var
   CfgFile: string;
 begin
   inherited CreateNew(AOwner);
+  FOpenCancel := TEvent.Create(nil, True, False, '');
   FLogger := CreateLogger;
   FRunner := CreateProcessRunner(FLogger);
   FConfig := TToolConfig.Create;
@@ -268,6 +280,7 @@ destructor TMainWizard.Destroy;
 begin
   FClosing := True;
   FRestore.Free;
+  FOpenCancel.Free;
   FVersionIds.Free;
   FSelected.Free;
   FItems.Free;
@@ -508,6 +521,16 @@ begin
     'Manter também a pasta (por padrão ela é removida depois de conferir o .zip)';
   FChkKeepFolder.Checked := False;
   FChkZip.OnClick := ZipCheckClick;
+  FLblOpenStatus := NewLabel(FPanels[wpPath], '');
+  FLblOpenStatus.Top := Row.Top + Row.Height + S(10);
+  FLblOpenStatus.Margins.Top := S(10);
+  FLblOpenStatus.Visible := False;
+  FOpenProgress := TProgressBar.Create(Self);
+  FOpenProgress.Parent := FPanels[wpPath];
+  FOpenProgress.Align := alTop;
+  FOpenProgress.Top := FLblOpenStatus.Top + FLblOpenStatus.Height + S(1);
+  FOpenProgress.Height := S(18);
+  FOpenProgress.Visible := False;
 end;
 
 procedure TMainWizard.BuildRunPage;
@@ -653,7 +676,10 @@ begin
     FBtnNext.Caption := 'Executar'
   else
     FBtnNext.Caption := 'Avançar >';
-  FBtnClose.Enabled := not FBusy;
+  FBtnClose.Enabled := not FBusy or (FOpeningSource and not FCloseAfterOpen);
+  FEdtPath.Enabled := not FOpeningSource;
+  FBtnBrowse.Enabled := not FOpeningSource;
+  FBtnBrowseZip.Enabled := not FOpeningSource;
   FRgMode.Enabled := not FBusy;
 end;
 
@@ -811,6 +837,15 @@ end;
 procedure TMainWizard.WizardCloseQuery(Sender: TObject; var CanClose: Boolean);
 begin
   CanClose := not FBusy;
+  if FOpeningSource then
+  begin
+    FCloseAfterOpen := True;
+    FOpenCancel.SetEvent;
+    ShowOpenProgress(0, 0,
+      'Cancelando abertura e limpando arquivos temporários...');
+    UpdateButtons;
+    Exit;
+  end;
   if not CanClose then
     MessageDlg('Aguarde o término da operação em andamento.', mtInformation,
       [mbOK], 0);
@@ -1236,11 +1271,11 @@ end;
 
 function TMainWizard.OpenSource: Boolean;
 var
-  Engine: TRestoreEngine;
+  Engine, Previous: TRestoreEngine;
+  Source: string;
 begin
   Result := False;
-  if (FSourceText = '') or not(FileExists(FSourceText) or
-    DirectoryExists(FSourceText)) then
+  if FSourceText = '' then
   begin
     MessageDlg('Informe uma pasta de backup ou arquivo .zip existente.',
       mtWarning, [mbOK], 0);
@@ -1248,28 +1283,106 @@ begin
   end;
   if (FRestore <> nil) and SameText(FRestoreSource, FSourceText) then
     Exit(True);
-  FreeAndNil(FRestore);
-  Engine := TRestoreEngine.Create(FLogger, FRunner);
-  Screen.Cursor := crHourGlass;
-  try
-    try
-      Engine.Open(FSourceText);
-    except
-      on E: Exception do
+  Source := FSourceText;
+  Previous := FRestore;
+  FRestore := nil;
+  FRestoreSource := '';
+  Engine := nil;
+  FOpenCancel.ResetEvent;
+  FOpeningSource := True;
+  SetBusy(True);
+  ShowOpenProgress(0, 0, 'Abrindo backup...');
+  TWizardWorker.Create(procedure
+    var
+      Opened: Boolean;
+    begin
+      Previous.Free;
+      if OpenCancelled then
+        Exit;
+      Engine := TRestoreEngine.Create(FLogger, CreateProcessRunner(FLogger,
+        OpenCancelled));
+      Opened := False;
+      try
+        Engine.Open(Source, QueueOpenProgress);
+        Opened := True;
+      finally
+        if not Opened or OpenCancelled then
+          FreeAndNil(Engine);
+      end;
+    end, procedure(const AError: string; APrecheck: Boolean)
+    begin
+      if FCloseAfterOpen then
       begin
-        Engine.Free;
-        Screen.Cursor := crDefault;
-        MessageDlg('Não foi possível abrir o backup: ' + E.Message, mtError,
-          [mbOK], 0);
+        { Close may have been requested after the worker queued its result. }
+        if Engine <> nil then
+          TWizardWorker.Create(procedure
+            begin
+              FreeAndNil(Engine);
+            end, FinishClosingSource)
+        else
+          FinishClosingSource('', False);
         Exit;
       end;
-    end;
-  finally
-    Screen.Cursor := crDefault;
-  end;
-  FRestore := Engine;
-  FRestoreSource := FSourceText;
-  Result := True;
+      FOpeningSource := False;
+      FLblOpenStatus.Visible := False;
+      FOpenProgress.Visible := False;
+      SetBusy(False);
+      if AError <> '' then
+        MessageDlg('Não foi possível abrir o backup: ' + AError, mtError,
+          [mbOK], 0)
+      else
+      begin
+        FRestore := Engine;
+        FRestoreSource := Source;
+        ShowPage(NextPageOf(wpPath));
+      end;
+    end);
+end;
+
+function TMainWizard.OpenCancelled: Boolean;
+begin
+  Result := FOpenCancel.WaitFor(0) = wrSignaled;
+end;
+
+procedure TMainWizard.ShowOpenProgress(ACurrent, ATotal: Integer;
+const AStatus: string);
+begin
+  FLblOpenStatus.Caption := AStatus;
+  FLblOpenStatus.Visible := True;
+  if ATotal > 0 then
+  begin
+    FOpenProgress.Style := pbstNormal;
+    FOpenProgress.Max := ATotal;
+    FOpenProgress.Position := ACurrent;
+  end
+  else
+    FOpenProgress.Style := pbstMarquee;
+  FOpenProgress.Visible := True;
+end;
+
+procedure TMainWizard.QueueOpenProgress(ACurrent, ATotal: Integer;
+const AStatus: string);
+var
+  Status: string;
+begin
+  if OpenCancelled then
+    Abort;
+  Status := AStatus;
+  TThread.Queue(nil, procedure
+    begin
+      if not FCloseAfterOpen then
+        ShowOpenProgress(ACurrent, ATotal, Status);
+    end);
+end;
+
+procedure TMainWizard.FinishClosingSource(const AError: string;
+APrecheck: Boolean);
+begin
+  if AError <> '' then
+    FLogger.Warn(AError);
+  FOpeningSource := False;
+  SetBusy(False);
+  Close;
 end;
 
 { --------------------------------------------------------------- Execution }

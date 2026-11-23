@@ -2,16 +2,17 @@
 
 interface
 
-uses Core.Types;
+uses System.SysUtils, Core.Types;
 
-function CreateProcessRunner(const ALogger: ILogger): IProcessRunner;
+function CreateProcessRunner(const ALogger: ILogger;
+  const AIsCancelled: TFunc<Boolean> = nil): IProcessRunner;
 function Quote(const S: string): string;
 
 implementation
 
 uses
   Core.SystemUtils, Core.Logger,
-  System.SysUtils, System.Classes, System.StrUtils, System.Win.Registry,
+  System.Classes, System.StrUtils, System.Win.Registry,
   Winapi.Windows;
 
 type
@@ -19,13 +20,16 @@ type
     IStreamingProcessRunner)
   private
     FLogger: ILogger;
+    FIsCancelled: TFunc<Boolean>;
+    procedure CheckCancelled;
     function RunCommand(const AExe, AArgs, AWorkDir: string;
       ACodePage: Cardinal; const AOnLine: TProcessLineProc; out AOutput: string)
       : Cardinal;
     function RunTool(const AExe, AArgs, AWorkDir: string; ACodePage: Cardinal;
       const AOnLine: TProcessLineProc; out AOutput: string): Cardinal;
   public
-    constructor Create(const ALogger: ILogger);
+    constructor Create(const ALogger: ILogger;
+      const AIsCancelled: TFunc<Boolean>);
     function Run(const AExe, AArgs, AWorkDir: string; out AOutput: string)
       : Cardinal;
     function RunLines(const AExe, AArgs, AWorkDir: string; ACodePage: Cardinal;
@@ -41,18 +45,27 @@ type
     function UnzipTo(const AZipFile, ADestFolder: string): Boolean;
   end;
 
-function CreateProcessRunner(const ALogger: ILogger): IProcessRunner;
+function CreateProcessRunner(const ALogger: ILogger;
+  const AIsCancelled: TFunc<Boolean>): IProcessRunner;
 begin
-  Result := TProcessRunner.Create(ALogger);
+  Result := TProcessRunner.Create(ALogger, AIsCancelled);
 end;
 
-constructor TProcessRunner.Create(const ALogger: ILogger);
+constructor TProcessRunner.Create(const ALogger: ILogger;
+  const AIsCancelled: TFunc<Boolean>);
 begin
   inherited Create;
   FLogger := ALogger;
+  FIsCancelled := AIsCancelled;
   if FLogger = nil then
     FLogger := CreateLogger;
   FLogger.Debug('Criando executor de processos.');
+end;
+
+procedure TProcessRunner.CheckCancelled;
+begin
+  if Assigned(FIsCancelled) and FIsCancelled() then
+    raise EAbort.Create('A execução do processo foi cancelada.');
 end;
 
 function Quote(const S: string): string;
@@ -122,22 +135,17 @@ var
   CommandLine: string;
   Buffer: array [0 .. 8191] of Byte;
   ReadCount, Available: DWORD;
+  WaitResult: DWORD;
   RawOutput: TBytesStream;
   Encoding: TEncoding;
   WorkDir: PChar;
+  Completed: Boolean;
 
   procedure EmitLine;
   begin
     if RawOutput.Size = 0 then
       Exit;
-    try
-      AOnLine(Encoding.GetString(RawOutput.Bytes, 0, RawOutput.Size));
-    except
-      { Finish cancelling this child before the caller cleans up its output file. }
-      if TerminateProcess(ProcessInfo.hProcess, ERROR_CANCELLED) then
-        WaitForSingleObject(ProcessInfo.hProcess, INFINITE);
-      raise;
-    end;
+    AOnLine(Encoding.GetString(RawOutput.Bytes, 0, RawOutput.Size));
     RawOutput.Size := 0;
     RawOutput.Position := 0;
   end;
@@ -160,6 +168,7 @@ var
   end;
 
 begin
+  CheckCancelled;
   AOutput := '';
   FillChar(Security, SizeOf(Security), 0);
   Security.nLength := SizeOf(Security);
@@ -194,10 +203,12 @@ begin
     WritePipe := 0;
     RawOutput := nil;
     Encoding := nil;
+    Completed := False;
     try
       RawOutput := TBytesStream.Create;
       Encoding := TEncoding.GetEncoding(ACodePage);
       repeat
+        CheckCancelled;
         if not PeekNamedPipe(ReadPipe, nil, 0, nil, @Available, nil) then
         begin
           if GetLastError = ERROR_BROKEN_PIPE then
@@ -228,14 +239,22 @@ begin
       if Assigned(AOnLine) then
         EmitLine;
       { The child can also close stdout before exiting. }
-      if WaitForSingleObject(ProcessInfo.hProcess, INFINITE) <> WAIT_OBJECT_0
-      then
+      repeat
+        CheckCancelled;
+        WaitResult := WaitForSingleObject(ProcessInfo.hProcess, 20);
+      until WaitResult <> WAIT_TIMEOUT;
+      if WaitResult <> WAIT_OBJECT_0 then
         RaiseLastOSError;
       if not GetExitCodeProcess(ProcessInfo.hProcess, Result) then
         RaiseLastOSError;
       if not Assigned(AOnLine) then
         AOutput := Encoding.GetString(RawOutput.Bytes, 0, RawOutput.Size);
+      Completed := True;
     finally
+      { Stop the child before the caller can clean up its output files. }
+      if not Completed and TerminateProcess(ProcessInfo.hProcess,
+        ERROR_CANCELLED) then
+        WaitForSingleObject(ProcessInfo.hProcess, INFINITE);
       Encoding.Free;
       RawOutput.Free;
       CloseHandle(ProcessInfo.hThread);

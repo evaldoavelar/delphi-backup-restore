@@ -16,8 +16,16 @@ type
         ACodePage: Cardinal; const AOnLine: TProcessLineProc): Cardinal;
     end;
 
+    TExtractRunner = class(TTestRunner, IStreamingProcessRunner)
+    public
+      ForceTar, FailExtraction: Boolean;
+      function RunLines(const AExe, AArgs, AWorkDir: string;
+        ACodePage: Cardinal; const AOnLine: TProcessLineProc): Cardinal;
+    end;
+
   procedure CheckRealBackupZip(AStore: Boolean);
   procedure CheckZipProgress(AStore: Boolean);
+  procedure CheckExtractionProgress(AForceTar: Boolean);
   public
     [Test]
     procedure FormatsPortugueseZipEta;
@@ -31,6 +39,14 @@ type
     procedure StoreBackupEmitsThrottledMonotonicZipProgress;
     [Test]
     procedure StreamsCarriageReturnsAndSplitUtf8;
+    [Test]
+    procedure ExtractsZipAndReportsUnpackedBytes;
+    [Test]
+    procedure TarExtractionReportsCompletedFiles;
+    [Test]
+    procedure ExtractionFailureCleansTempAndDoesNotReportCompletion;
+    [Test]
+    procedure CancelsChildWhileItIsNotWritingOutput;
     [Test]
     procedure BackupVerifiesAndRemovesFolderAfterRealZip;
     [Test]
@@ -50,7 +66,8 @@ implementation
 uses
   System.SysUtils, System.Classes, System.Generics.Collections, System.IOUtils,
   System.StrUtils, System.JSON, System.Zip, Winapi.Windows, Core.BackupEngine,
-  Core.ProcessRunner, Core.SystemUtils, Core.ToolConfig, Core.Zip;
+  Core.ProcessRunner, Core.RestoreEngine, Core.SystemUtils, Core.ToolConfig,
+  Core.Zip;
 
 procedure TTestZip.FormatsPortugueseZipEta;
 const
@@ -208,15 +225,186 @@ begin
   end;
 end;
 
+function TTestZip.TExtractRunner.RunLines(const AExe, AArgs, AWorkDir: string;
+ACodePage: Cardinal; const AOnLine: TProcessLineProc): Cardinal;
+const
+  FirstFile = 'backup top/arquivo de 6 GB.txt';
+  SecondFile = 'backup top/arquivo de 9 GB.txt';
+  Manifest = 'backup top/manifest.json';
+var
+  Start, Finish: Integer;
+begin
+  Result := 0;
+  if StartsStr('-t -v -f ', AArgs) then
+  begin
+    Assert.AreEqual('tar.exe', AExe);
+    AOnLine('drwxrwxrwx  0 0      0          0 Nov 23 2025 backup top/');
+    AOnLine('-rw-rw-rw-  0 0      0 6442450944 Nov 23 16:52 ' + FirstFile);
+    AOnLine('-rw-rw-rw-  0 0      0 9663676416 Nov 23 16:52 ' + SecondFile);
+    AOnLine('-rw-rw-rw-  0 0      0          0 Nov 23 16:52 ' + Manifest);
+    if ForceTar then
+      AOnLine('lrwxrwxrwx  0 0      0          0 Nov 23 16:52 link -> backup top');
+    Exit;
+  end;
+
+  if AExe = 'tar.exe' then
+  begin
+    Assert.IsTrue(StartsStr('-x -v -f ', AArgs));
+    Start := Pos(' -C "', AArgs) + Length(' -C "');
+  end
+  else
+  begin
+    Assert.IsFalse(ForceTar);
+    Assert.IsTrue(StartsStr('x -tzip -y -aoa -bsp1 ', AArgs));
+    Assert.AreEqual<Cardinal>(CP_UTF8, ACodePage);
+    Start := Pos(' -o"', AArgs) + Length(' -o"');
+  end;
+  Finish := PosEx('"', AArgs, Start);
+  Extracted := Copy(AArgs, Start, Finish - Start);
+  ForceDirectories(TPath.Combine(Extracted, 'backup top'));
+  if FailExtraction then
+  begin
+    AOnLine('Falha simulada de extração.');
+    Exit(1);
+  end;
+  if AExe = 'tar.exe' then
+  begin
+    AOnLine('x ' + FirstFile);
+    Sleep(2050);
+    AOnLine('x ' + SecondFile);
+    AOnLine('x ' + Manifest);
+  end
+  else
+  begin
+    AOnLine('  0%');
+    Sleep(2050);
+    AOnLine(' 40% 1 - ' + FirstFile);
+    AOnLine(' 17%');
+  end;
+  TFile.Copy(ZipManifest, TPath.Combine(Extracted, Manifest));
+end;
+
+procedure TTestZip.CheckExtractionProgress(AForceTar: Boolean);
+var
+  Fake: TExtractRunner;
+  Engine: TRestoreEngine;
+  Zip: string;
+  Samples: TList<Integer>;
+  Stages: TStringList;
+begin
+  Zip := PrepareZip;
+  Fake := TExtractRunner.Create;
+  Fake.ZipManifest := FFake.ZipManifest;
+  Fake.ForceTar := AForceTar;
+  Samples := TList<Integer>.Create;
+  Stages := TStringList.Create;
+  Engine := TRestoreEngine.Create(FLogger, Fake);
+  try
+    Engine.Open(Zip, procedure(ACurrent, ATotal: Integer; const AStep: string)
+      begin
+        if ATotal = 0 then
+          Stages.Add(AStep)
+        else
+        begin
+          Assert.AreEqual(100, ATotal);
+          Samples.Add(ACurrent);
+          if ACurrent = 40 then
+          begin
+            Assert.IsTrue(StartsStr('Extraindo backup: 40% (6,0 de 15,0 GB)',
+              AStep), AStep);
+            Assert.IsTrue(ContainsStr(AStep, 'MB/s - faltam ~'), AStep);
+          end;
+        end;
+      end);
+    Assert.AreEqual(3, Stages.Count);
+    Assert.AreEqual('Abrindo backup...', Stages[0]);
+    Assert.AreEqual('Listando arquivos do backup...', Stages[1]);
+    Assert.AreEqual('Lendo manifesto...', Stages[2]);
+    Assert.AreEqual(3, Samples.Count);
+    Assert.AreEqual(0, Samples[0]);
+    Assert.AreEqual(40, Samples[1]);
+    Assert.AreEqual(100, Samples[2]);
+    Assert.AreEqual(1, Engine.Manifest.Versions.Count);
+  finally
+    Engine.Free;
+    Stages.Free;
+    Samples.Free;
+  end;
+end;
+
+procedure TTestZip.ExtractsZipAndReportsUnpackedBytes;
+begin
+  CheckExtractionProgress(False);
+end;
+
+procedure TTestZip.TarExtractionReportsCompletedFiles;
+begin
+  CheckExtractionProgress(True);
+end;
+
+procedure TTestZip.ExtractionFailureCleansTempAndDoesNotReportCompletion;
+var
+  Fake: TExtractRunner;
+  Engine: TRestoreEngine;
+  Zip: string;
+  Completed: Boolean;
+begin
+  Zip := PrepareZip;
+  Fake := TExtractRunner.Create;
+  Fake.FailExtraction := True;
+  Engine := TRestoreEngine.Create(FLogger, Fake);
+  Completed := False;
+  try
+    Assert.WillRaise(procedure
+      begin
+        Engine.Open(Zip,
+          procedure(ACurrent, ATotal: Integer; const AStep: string)
+          begin
+            if ACurrent = 100 then
+              Completed := True;
+          end);
+      end, EDelphiBackupError);
+    Assert.IsFalse(Completed);
+    Assert.IsTrue(Fake.Extracted <> '');
+    Assert.IsFalse(DirectoryExists(Fake.Extracted));
+  finally
+    Engine.Free;
+  end;
+end;
+
+procedure TTestZip.CancelsChildWhileItIsNotWritingOutput;
+var
+  Runner: IStreamingProcessRunner;
+  LastOutput: UInt64;
+begin
+  LastOutput := 0;
+  Assert.IsTrue(Supports(CreateProcessRunner(FLogger, function: Boolean
+    begin
+      Result := (LastOutput <> 0) and (GetTickCount64 - LastOutput >= 100);
+    end), IStreamingProcessRunner, Runner));
+  Assert.WillRaise(procedure
+    begin
+      Runner.RunLines(ParamStr(0), '--zip-pipe-child', FTemp, CP_UTF8,
+        procedure(const ALine: string)
+        begin
+          if ALine = '37%' then
+            LastOutput := GetTickCount64;
+        end);
+    end, EAbort);
+  Assert.IsTrue(GetTickCount64 - LastOutput < 5000);
+end;
+
 procedure TTestZip.CheckRealBackupZip(AStore: Boolean);
 var
   Engine: TBackupEngine;
+  Opener: TRestoreEngine;
   Items: TBackupItemList;
   Options: TBackupOptions;
   Zip: string;
   Archive: TZipFile;
   Item: TBackupItem;
   I: Integer;
+  Completed: Boolean;
 begin
   Options := Default (TBackupOptions);
   Options.Destination := TPath.Combine(FTemp, 'zip com espaços');
@@ -250,6 +438,20 @@ begin
       finally
         Archive.Free;
       end;
+    end;
+    Opener := TRestoreEngine.Create(FLogger, CreateProcessRunner(FLogger));
+    Completed := False;
+    try
+      Opener.Open(Zip, procedure(ACurrent, ATotal: Integer; const AStep: string)
+        begin
+          if (ACurrent = 100) and (ATotal = 100) then
+            Completed := True;
+        end);
+      Assert.IsTrue(Completed);
+      Assert.IsTrue(FileExists(TPath.Combine(Opener.BackupRoot,
+        'files\f001\arquivo com espaço.txt')));
+    finally
+      Opener.Free;
     end;
   finally
     Engine.Free;

@@ -38,7 +38,7 @@ sequenceDiagram
     participant R as TRestoreEngine
     participant P as IProcessRunner
     U->>R: Open(pasta ou .zip)
-    R->>P: tar -x (se zip) para %TEMP%
+    R->>P: 7-Zip ou tar (se zip) para %TEMP%
     U->>R: Precheck(opções, versões instaladas)
     R-->>U: EPrecheckError (sem admin, IDE aberta, versão ausente)
     U->>R: Execute
@@ -110,9 +110,12 @@ function CreateLogger: ILogger;   // thread-safe (TCriticalSection); arquivo UTF
 
 ### Core.ProcessRunner
 ```pascal
-function CreateProcessRunner(const ALogger: ILogger): IProcessRunner;
+function CreateProcessRunner(const ALogger: ILogger;
+  const AIsCancelled: TFunc<Boolean> = nil): IProcessRunner;
 ```
 `CreateProcess` com `CREATE_NO_WINDOW`, pipes para stdout/stderr, leitura contínua (evita deadlock).
+O callback opcional de cancelamento é consultado durante a espera pelo processo, mesmo sem saída no pipe.
+Quando sinalizado, o executor encerra o processo antes de devolver o controle ao chamador.
 Saída de robocopy/reg decodificada com a code page OEM (`GetOEMCP`). `CopyTree`: `robocopy src dst /E|/MIR
 /COPY:DAT /DCOPY:T /R:1 /W:1 /MT:16 /NP /NFL /NDL /XJ /XD ... /XF ...`; sucesso quando exit code < 8.
 `CopyFile`: `robocopy dir dst arquivo /COPY:DAT /R:1 /W:1`. `RegExport`: `reg export <key> <file> /y`
@@ -238,7 +241,7 @@ type
     constructor Create(const ALogger: ILogger; const ARunner: IProcessRunner);
     destructor Destroy; override;
     { Abre pasta ou zip (extrai em %TEMP%\DelphiBackupRestore_<stamp>) e carrega o manifest. }
-    procedure Open(const ASource: string);
+    procedure Open(const ASource: string; const AProgress: TProgressProc = nil);
     property Manifest: TManifest read FManifest;
     property BackupRoot: string read FBackupRoot;
     { Raise EPrecheckError com mensagem clara: não admin, IDE aberta, versão não instalada (mensagem com
@@ -261,6 +264,9 @@ function RemapRegFileText(const ARegText, AOldProfile, ANewProfile: string): str
 Nota de ordenação: o manifest guarda, por versão, `BdsVersion` e o nome; para ordenar use a era deduzida
 do produto (Delphi 5/6/7 têm BdsVersion 5.0/6.0/7.0 em `Borland\Delphi`) — por isso `TManifestVersion`
 deve ser casado com `AInstalled.FindByBds` e ordenado por `SortKey` da instalada (que tem a era).
+Na abertura do ZIP, `Core.Zip` lista os tamanhos descompactados com tar e extrai com 7-Zip, quando
+disponível para arquivos e pastas comuns, ou tar. O callback recebe as etapas de abertura e
+o progresso da extração. Com tar, a contagem avança à medida que os arquivos são concluídos.
 Execute: exporta o registro atual das versões escolhidas para `%TEMP%\DelphiBackupRestore_pre_<stamp>\`;
 para cada versão em ordem crescente: `CopyTree(..., Mirror=True)` dos ikFolder cuja lista Versions contém
 a versão (item compartilhado entre versões é copiado **uma única vez**, na primeira versão em que aparece —
