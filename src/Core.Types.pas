@@ -1,4 +1,4 @@
-unit Core.Types;
+﻿unit Core.Types;
 
 { Shared contracts for delphi-backup-restore.
 
@@ -17,10 +17,10 @@ const
 
   { Backup folder layout (relative to the backup root folder) }
   BACKUP_MANIFEST_FILE = 'manifest.json';
-  BACKUP_LOG_FILE      = 'backup.log';
-  BACKUP_FILES_DIR     = 'files';      // files\<ItemId>\...  (folders and single files)
-  BACKUP_REGISTRY_DIR  = 'registry';   // registry\<ItemId>.reg
-  BACKUP_DLLS_DIR      = 'dlls';       // dlls\<ItemId>\<FileName>
+  BACKUP_LOG_FILE = 'backup.log';
+  BACKUP_FILES_DIR = 'files'; // files\<ItemId>\...  (folders and single files)
+  BACKUP_REGISTRY_DIR = 'registry'; // registry\<ItemId>.reg
+  BACKUP_DLLS_DIR = 'dlls'; // dlls\<ItemId>\<FileName>
   BACKUP_FOLDER_PREFIX = 'DelphiEnv_'; // DelphiEnv_<MACHINE>_<yyyyMMdd_HHnn>
 
   MANIFEST_FORMAT_VERSION = 1;
@@ -29,11 +29,12 @@ const
   CONFIG_FILE_NAME = 'DelphiBackupRestore.json';
 
   { Process exit codes (CLI) }
-  EXIT_OK          = 0;
-  EXIT_DIFFERENCES = 1;   // compare found differences
-  EXIT_ERROR       = 2;   // generic failure
-  EXIT_PRECHECK    = 3;   // precheck refused (IDE running, version missing, not admin)
-  EXIT_USAGE       = 4;   // invalid command line
+  EXIT_OK = 0;
+  EXIT_DIFFERENCES = 1; // compare found differences
+  EXIT_ERROR = 2; // generic failure
+  EXIT_PRECHECK = 3;
+  // precheck refused (IDE running, version missing, not admin)
+  EXIT_USAGE = 4; // invalid command line
 
 type
   EDelphiBackupError = class(Exception);
@@ -45,7 +46,8 @@ type
 
   TLogSink = reference to procedure(ALevel: TLogLevel; const AMessage: string);
 
-  TProgressProc = reference to procedure(ACurrent, ATotal: Integer; const AStep: string);
+  TProgressProc = reference to procedure(ACurrent, ATotal: Integer;
+    const AStep: string);
 
   ILogger = interface
     ['{6F0C2B1E-9E52-4C3B-9E0B-2F6A3A1D7C01}']
@@ -62,28 +64,35 @@ type
 
   { --------------------------------------------------------------- Versions }
 
-  TDelphiEra = (
-    deBorlandDelphi,  // Software\Borland\Delphi\<v>   (Delphi 5..7)
-    deBorlandBDS,     // Software\Borland\BDS\<v>      (2005..2007, BDS 3.0..5.0)
-    deCodeGear,       // Software\CodeGear\BDS\<v>     (2009..2010, BDS 6.0..7.0)
-    deEmbarcadero     // Software\Embarcadero\BDS\<v>  (XE and later, BDS 8.0+)
-  );
+  TDelphiEra = (deBorlandDelphi, // Software\Borland\Delphi\<v>   (Delphi 5..7)
+    deBorlandBDS, // Software\Borland\BDS\<v>      (2005..2007, BDS 3.0..5.0)
+    deCodeGear, // Software\CodeGear\BDS\<v>     (2009..2010, BDS 6.0..7.0)
+    deEmbarcadero // Software\Embarcadero\BDS\<v>  (XE and later, BDS 8.0+)
+    );
 
   TDelphiVersion = class
   public
-    BdsVersion: string;       // registry version key, e.g. '22.0', '5.0', '7.0' (D7)
-    Major: Integer;           // parsed from BdsVersion, used for ordering
+    { Version identifier, unique per machine. Equals the registry version key ('22.0',
+      '5.0') except for the Borland\Delphi era (Delphi 5..7), which is prefixed with 'D'
+      ('D7.0') because Delphi 5 and Delphi 2007 (BDS 5.0) share the key name '5.0'.
+      Use VersionIdNumber to get the registry key name back. }
+    BdsVersion: string;
+    Major: Integer; // parsed from BdsVersion, used for ordering
     Minor: Integer;
     Era: TDelphiEra;
-    ProductName: string;      // e.g. 'Delphi 11 Alexandria' (from Core.VersionCatalog)
-    RegistryKey: string;      // relative key, e.g. 'Software\Embarcadero\BDS\22.0'
-                              // (valid under HKCU and under HKLM\SOFTWARE\WOW6432Node minus 'Software\')
-    RootDir: string;          // install dir with trailing backslash
+    ProductName: string;
+    // e.g. 'Delphi 11 Alexandria' (from Core.VersionCatalog)
+    RegistryKey: string; // relative key, e.g. 'Software\Embarcadero\BDS\22.0'
+    // (valid under HKCU and under HKLM\SOFTWARE\WOW6432Node minus 'Software\')
+    RootDir: string; // install dir with trailing backslash
     ProductVersion: string;
-    InstalledUpdates: string; // flattened 'name=value;...' from <key>\InstalledUpdates (may be empty)
-    CommonDir: string;        // $(BDSCOMMONDIR): Public Documents folder of this version
-    UserDir: string;          // $(BDSUSERDIR):   user Documents folder of this version
-    AppDataDir: string;       // %APPDATA% folder of this version (layouts, EnvOptions.proj)
+    InstalledUpdates: string;
+    // flattened 'name=value;...' from <key>\InstalledUpdates (may be empty)
+    CommonDir: string;
+    // $(BDSCOMMONDIR): Public Documents folder of this version
+    UserDir: string; // $(BDSUSERDIR):   user Documents folder of this version
+    AppDataDir: string;
+    // %APPDATA% folder of this version (layouts, EnvOptions.proj)
     { Ordering key: older versions sort first. Delphi 5..7 (deBorlandDelphi)
       must sort before BDS 3.0 even though 7 > 3, so the era is part of the key. }
     function SortKey: Integer;
@@ -98,28 +107,27 @@ type
 
   { ------------------------------------------------------------ Backup items }
 
-  TItemKind = (
-    ikFolder,    // whole folder tree, copied with robocopy
-    ikFile,      // single file (e.g. expert DLL living inside $(BDS)\bin)
-    ikRegistry,  // registry key, exported with reg.exe
-    ikDll        // third-party DLL from System32/SysWOW64 (optional scan)
-  );
+  TItemKind = (ikFolder, // whole folder tree, copied with robocopy
+    ikFile, // single file (e.g. expert DLL living inside $(BDS)\bin)
+    ikRegistry, // registry key, exported with reg.exe
+    ikDll // third-party DLL from System32/SysWOW64 (optional scan)
+    );
 
-  TItemCategory = (
-    icComponents,   // third-party component folders found in library paths / packages
-    icIdeConfig,    // IDE registry key + BDSCOMMONDIR/BDSUSERDIR/AppData folders
-    icExperts,      // expert/plugin folders, files and their registry keys
-    icBoss,         // %USERPROFILE%\.boss
-    icExtra,        // from the config file
-    icSystemDll     // optional DLL scan results
-  );
+  TItemCategory = (icComponents,
+    // third-party component folders found in library paths / packages
+    icIdeConfig, // IDE registry key + BDSCOMMONDIR/BDSUSERDIR/AppData folders
+    icExperts, // expert/plugin folders, files and their registry keys
+    icBoss, // %USERPROFILE%\.boss
+    icExtra, // from the config file
+    icSystemDll // optional DLL scan results
+    );
   TItemCategories = set of TItemCategory;
 
   TDllOrigin = (doNone, doDependency, doSystemScan);
 
   TBackupItem = class
   public
-    Id: string;              // stable, unique inside one backup: 'f001', 'r001', 'd001'
+    Id: string; // stable, unique inside one backup: 'f001', 'r001', 'd001'
     Kind: TItemKind;
     Category: TItemCategory;
     { Absolute path for ikFolder/ikFile/ikDll.
@@ -129,40 +137,45 @@ type
     { BDS versions that use this item ('22.0', '5.0'). Empty list = global item,
       restored when any version is restored. }
     Versions: TStringList;
-    Selected: Boolean;       // user choice (GUI/CLI); engines only process Selected items
-    Description: string;     // human readable, shown in GUI/log
+    Selected: Boolean;
+    // user choice (GUI/CLI); engines only process Selected items
+    Description: string; // human readable, shown in GUI/log
     { ikDll only }
     Company: string;
-    FileVersion: string;     // 'a.b.c.d'
+    FileVersion: string; // 'a.b.c.d'
     DllOrigin: TDllOrigin;
-    ReinstalledByIde: Boolean; // Borland/CodeGear/Embarcadero runtime: informational only
+    ReinstalledByIde: Boolean;
+    // Borland/CodeGear/Embarcadero runtime: informational only
     constructor Create;
     destructor Destroy; override;
-    function UsedByVersion(const ABdsVersion: string): Boolean; // True if global or listed
+    function UsedByVersion(const ABdsVersion: string): Boolean;
+    // True if global or listed
   end;
 
   TBackupItemList = class(TObjectList<TBackupItem>)
   public
     function FindById(const AId: string): TBackupItem;
-    function FindBySource(AKind: TItemKind; const ASourcePath: string): TBackupItem; // case-insensitive
-    function NextId(AKind: TItemKind): string; // 'f'/'r'/'d' + 3 digits, unique in list
+    function FindBySource(AKind: TItemKind; const ASourcePath: string)
+      : TBackupItem; // case-insensitive
+    function NextId(AKind: TItemKind): string;
+    // 'f'/'r'/'d' + 3 digits, unique in list
   end;
 
   { --------------------------------------------------------------- Manifest }
 
   TManifestFile = class
   public
-    RelPath: string;     // relative to the item root, backslash separated
+    RelPath: string; // relative to the item root, backslash separated
     Size: Int64;
     ModifiedUtc: string; // ISO 8601, 'yyyy-mm-dd"T"hh:nn:ss"Z"'
   end;
 
   TManifestItem = class
   public
-    Item: TBackupItem;               // owned
+    Item: TBackupItem; // owned
     Files: TObjectList<TManifestFile>; // owned; empty for ikRegistry
-    Hash: string;                    // SHA256 (hex, lowercase) of the sorted file listing,
-                                     // or of the normalized .reg content for ikRegistry
+    Hash: string; // SHA256 (hex, lowercase) of the sorted file listing,
+    // or of the normalized .reg content for ikRegistry
     constructor Create;
     destructor Destroy; override;
   end;
@@ -182,11 +195,16 @@ type
     ToolVersion: string;
     MachineName: string;
     CreatedUtc: string;
-    SourceUserProfile: string;   // e.g. 'C:\Users\Desenvolvimento' (for path remapping)
-    SourcePublicDir: string;     // e.g. 'C:\Users\Public'
-    UserPath: string;            // user PATH environment variable at backup time
+    SourceUserProfile: string;
+    // e.g. 'C:\Users\Desenvolvimento' (for path remapping)
+    SourceDocumentsDir: string;
+    SourcePublicDir: string; // e.g. 'C:\Users\Public'
+    UserPath: string; // user PATH environment variable at backup time
+    HasExclusions: Boolean; // both exclusion fields were recorded
+    ExcludeDirs: TStringList; // owned
+    ExcludeFiles: TStringList; // owned
     Versions: TObjectList<TManifestVersion>; // owned
-    Items: TObjectList<TManifestItem>;       // owned
+    Items: TObjectList<TManifestItem>; // owned
     constructor Create;
     destructor Destroy; override;
     function FindVersion(const ABdsVersion: string): TManifestVersion;
@@ -196,25 +214,29 @@ type
 
   TToolConfig = class
   public
-    ExtraFolders: TStringList;      // absolute paths, %ENV% allowed
+    ExtraFolders: TStringList; // absolute paths, %ENV% allowed
     ExtraRegistryKeys: TStringList; // 'HKCU\...' / 'HKLM\...'
-    ExcludeDirs: TStringList;       // folder names (robocopy /XD)
-    ExcludeFiles: TStringList;      // masks (robocopy /XF)
-    constructor Create;             // fills default excludes
+    ExcludeDirs: TStringList; // folder names (robocopy /XD)
+    ExcludeFiles: TStringList; // masks (robocopy /XF)
+    constructor Create; // fills default excludes
     destructor Destroy; override;
   end;
 
   TBackupOptions = record
-    Versions: TArray<string>;      // BDS versions selected
-    Destination: string;           // parent folder; engine creates DelphiEnv_<MACHINE>_<stamp>
-    CreateZip: Boolean;            // default True
-    ScanDlls: Boolean;             // default False
-    Categories: TItemCategories;   // default all except icSystemDll
+    Versions: TArray<string>; // BDS versions selected
+    Destination: string;
+    // parent folder; engine creates DelphiEnv_<MACHINE>_<stamp>
+    CreateZip: Boolean; // default True
+    { with CreateZip: keep the backup folder next to the .zip. Default False: the
+      folder is deleted after the zip is verified (same file count). }
+    KeepFolder: Boolean;
+    ScanDlls: Boolean; // default False
+    Categories: TItemCategories; // default all except icSystemDll
   end;
 
   TRestoreOptions = record
-    Source: string;                // backup folder or .zip
-    Versions: TArray<string>;      // empty = every version in the backup
+    Source: string; // backup folder or .zip
+    Versions: TArray<string>; // empty = every version in the backup
     Categories: TItemCategories;
   end;
 
@@ -231,7 +253,7 @@ type
   public
     Kind: TDiffKind;
     ItemId: string;
-    Path: string;     // file path, registry key or version label
+    Path: string; // file path, registry key or version label
     Detail: string;
   end;
 
@@ -249,7 +271,8 @@ type
   IProcessRunner = interface
     ['{A3E4C1D2-5B6F-4E7A-8C9D-0E1F2A3B4C02}']
     { Runs an executable hidden, waits, returns the exit code and captured stdout+stderr. }
-    function Run(const AExe, AArgs, AWorkDir: string; out AOutput: string): Cardinal;
+    function Run(const AExe, AArgs, AWorkDir: string; out AOutput: string)
+      : Cardinal;
     { robocopy wrappers. Mirror=True uses /MIR, otherwise /E. Returns True on robocopy exit < 8. }
     function CopyTree(const ASource, ADest: string; AMirror: Boolean;
       AExcludeDirs, AExcludeFiles: TStrings): Boolean;
@@ -288,9 +311,10 @@ type
   end;
 
   { Free helpers shared by every unit }
-function VersionsToText(const AVersions: TArray<string>): string;      // '22.0,5.0'
-function TextToVersions(const AText: string): TArray<string>;          // accepts , or ;
-function ContainsText(const AList: TArray<string>; const AValue: string): Boolean;
+function VersionsToText(const AVersions: TArray<string>): string; // '22.0,5.0'
+function TextToVersions(const AText: string): TArray<string>; // accepts , or ;
+function ContainsText(const AList: TArray<string>;
+  const AValue: string): Boolean;
 function LogLevelToText(ALevel: TLogLevel): string;
 function ItemKindToText(AKind: TItemKind): string;
 function TextToItemKind(const AText: string): TItemKind;
@@ -298,6 +322,11 @@ function ItemCategoryToText(ACategory: TItemCategory): string;
 function TextToItemCategory(const AText: string): TItemCategory;
 function AllCategories: TItemCategories;
 function DefaultBackupCategories: TItemCategories; // all except icSystemDll
+{ Version identifiers: 'D7.0' = Borland Delphi 7, '5.0' = BDS 5.0 (Delphi 2007), see BdsVersion }
+function LegacyDelphiId(const ARegistryVersion: string): string;
+// '7.0' -> 'D7.0'
+function IsLegacyDelphiId(const AId: string): Boolean; // starts with 'D'
+function VersionIdNumber(const AId: string): string; // 'D7.0' -> '7.0'
 
 implementation
 
@@ -306,9 +335,9 @@ implementation
 function TDelphiVersion.SortKey: Integer;
 begin
   if Era = deBorlandDelphi then
-    Result := Major * 100 + Minor             // Delphi 5..7 -> 500..700
+    Result := Major * 100 + Minor // Delphi 5..7 -> 500..700
   else
-    Result := 10000 + Major * 100 + Minor;    // BDS 3.0+ always after Delphi 7
+    Result := 10000 + Major * 100 + Minor; // BDS 3.0+ always after Delphi 7
 end;
 
 function TDelphiVersion.DisplayName: string;
@@ -321,7 +350,8 @@ end;
 
 { TDelphiVersionList }
 
-function TDelphiVersionList.FindByBds(const ABdsVersion: string): TDelphiVersion;
+function TDelphiVersionList.FindByBds(const ABdsVersion: string)
+  : TDelphiVersion;
 var
   V: TDelphiVersion;
 begin
@@ -383,20 +413,22 @@ begin
       Exit(It);
 end;
 
-function TBackupItemList.FindBySource(AKind: TItemKind; const ASourcePath: string): TBackupItem;
+function TBackupItemList.FindBySource(AKind: TItemKind;
+  const ASourcePath: string): TBackupItem;
 var
   It: TBackupItem;
 begin
   Result := nil;
   for It in Self do
-    if (It.Kind = AKind) and SameText(ExcludeTrailingPathDelimiter(It.SourcePath),
+    if (It.Kind = AKind) and
+      SameText(ExcludeTrailingPathDelimiter(It.SourcePath),
       ExcludeTrailingPathDelimiter(ASourcePath)) then
       Exit(It);
 end;
 
 function TBackupItemList.NextId(AKind: TItemKind): string;
 const
-  Prefix: array[TItemKind] of Char = ('f', 'f', 'r', 'd');
+  Prefix: array [TItemKind] of Char = ('f', 'f', 'r', 'd');
 var
   N: Integer;
 begin
@@ -428,12 +460,16 @@ constructor TManifest.Create;
 begin
   inherited Create;
   FormatVersion := MANIFEST_FORMAT_VERSION;
+  ExcludeDirs := TStringList.Create;
+  ExcludeFiles := TStringList.Create;
   Versions := TObjectList<TManifestVersion>.Create(True);
   Items := TObjectList<TManifestItem>.Create(True);
 end;
 
 destructor TManifest.Destroy;
 begin
+  ExcludeFiles.Free;
+  ExcludeDirs.Free;
   Items.Free;
   Versions.Free;
   inherited;
@@ -462,6 +498,12 @@ begin
   ExcludeDirs.Add('__recovery');
   ExcludeDirs.Add('Samples');
   ExcludeFiles.Add('*.~*');
+  { Platform SDKs downloaded into CatalogRepository by the IDE installer/GetIt:
+    gigabytes that a reinstall of the IDE brings back. Override in the config file. }
+  ExcludeDirs.Add('AndroidNDK-*');
+  ExcludeDirs.Add('AndroidSDK-*');
+  ExcludeDirs.Add('OpenJDK-*');
+  ExcludeDirs.Add('AdoptOpenJDK-*');
 end;
 
 destructor TToolConfig.Destroy;
@@ -497,7 +539,8 @@ begin
       Exit(True);
 end;
 
-procedure TCompareResult.Add(AKind: TDiffKind; const AItemId, APath, ADetail: string);
+procedure TCompareResult.Add(AKind: TDiffKind;
+  const AItemId, APath, ADetail: string);
 var
   E: TDiffEntry;
 begin
@@ -546,7 +589,8 @@ begin
   end;
 end;
 
-function ContainsText(const AList: TArray<string>; const AValue: string): Boolean;
+function ContainsText(const AList: TArray<string>;
+  const AValue: string): Boolean;
 var
   S: string;
 begin
@@ -558,15 +602,16 @@ end;
 
 function LogLevelToText(ALevel: TLogLevel): string;
 const
-  Names: array[TLogLevel] of string = ('DEBUG', 'INFO', 'WARN', 'ERROR');
+  Names: array [TLogLevel] of string = ('DEBUG', 'INFO', 'WARN', 'ERROR');
 begin
   Result := Names[ALevel];
 end;
 
 const
-  ItemKindNames: array[TItemKind] of string = ('folder', 'file', 'registry', 'dll');
-  ItemCategoryNames: array[TItemCategory] of string =
-    ('components', 'ide-config', 'experts', 'boss', 'extra', 'system-dll');
+  ItemKindNames: array [TItemKind] of string = ('folder', 'file',
+    'registry', 'dll');
+  ItemCategoryNames: array [TItemCategory] of string = ('components',
+    'ide-config', 'experts', 'boss', 'extra', 'system-dll');
 
 function ItemKindToText(AKind: TItemKind): string;
 begin
@@ -600,12 +645,30 @@ end;
 
 function AllCategories: TItemCategories;
 begin
-  Result := [Low(TItemCategory)..High(TItemCategory)];
+  Result := [Low(TItemCategory) .. High(TItemCategory)];
 end;
 
 function DefaultBackupCategories: TItemCategories;
 begin
   Result := AllCategories - [icSystemDll];
+end;
+
+function LegacyDelphiId(const ARegistryVersion: string): string;
+begin
+  Result := 'D' + ARegistryVersion;
+end;
+
+function IsLegacyDelphiId(const AId: string): Boolean;
+begin
+  Result := (Length(AId) > 1) and CharInSet(AId[1], ['D', 'd']);
+end;
+
+function VersionIdNumber(const AId: string): string;
+begin
+  if IsLegacyDelphiId(AId) then
+    Result := Copy(AId, 2, MaxInt)
+  else
+    Result := AId;
 end;
 
 end.
