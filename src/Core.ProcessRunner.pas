@@ -4,6 +4,14 @@ interface
 
 uses System.SysUtils, Core.Types;
 
+type
+  IPollingProcessRunner = interface
+    ['{215A18F3-A156-4964-87F8-389C9DA6C87C}']
+    function RunLinesWithPoll(const AExe, AArgs, AWorkDir: string;
+      ACodePage: Cardinal; const AOnLine: TProcessLineProc;
+      const AOnPoll: TProc): Cardinal;
+  end;
+
 function CreateProcessRunner(const ALogger: ILogger;
   const AIsCancelled: TFunc<Boolean> = nil): IProcessRunner;
 function Quote(const S: string): string;
@@ -17,16 +25,17 @@ uses
 
 type
   TProcessRunner = class(TInterfacedObject, IProcessRunner,
-    IStreamingProcessRunner)
+    IStreamingProcessRunner, IPollingProcessRunner)
   private
     FLogger: ILogger;
     FIsCancelled: TFunc<Boolean>;
     procedure CheckCancelled;
     function RunCommand(const AExe, AArgs, AWorkDir: string;
-      ACodePage: Cardinal; const AOnLine: TProcessLineProc; out AOutput: string)
-      : Cardinal;
+      ACodePage: Cardinal; const AOnLine: TProcessLineProc;
+      const AOnPoll: TProc; out AOutput: string): Cardinal;
     function RunTool(const AExe, AArgs, AWorkDir: string; ACodePage: Cardinal;
-      const AOnLine: TProcessLineProc; out AOutput: string): Cardinal;
+      const AOnLine: TProcessLineProc; const AOnPoll: TProc;
+      out AOutput: string): Cardinal;
   public
     constructor Create(const ALogger: ILogger;
       const AIsCancelled: TFunc<Boolean>);
@@ -34,6 +43,9 @@ type
       : Cardinal;
     function RunLines(const AExe, AArgs, AWorkDir: string; ACodePage: Cardinal;
       const AOnLine: TProcessLineProc): Cardinal;
+    function RunLinesWithPoll(const AExe, AArgs, AWorkDir: string;
+      ACodePage: Cardinal; const AOnLine: TProcessLineProc;
+      const AOnPoll: TProc): Cardinal;
     function CopyTree(const ASource, ADest: string; AMirror: Boolean;
       AExcludeDirs, AExcludeFiles: TStrings): Boolean;
     function CopyFile(const ASourceFile, ADestDir: string): Boolean;
@@ -89,20 +101,28 @@ end;
 function TProcessRunner.Run(const AExe, AArgs, AWorkDir: string;
   out AOutput: string): Cardinal;
 begin
-  Result := RunCommand(AExe, AArgs, AWorkDir, GetOEMCP, nil, AOutput);
+  Result := RunCommand(AExe, AArgs, AWorkDir, GetOEMCP, nil, nil, AOutput);
 end;
 
 function TProcessRunner.RunLines(const AExe, AArgs, AWorkDir: string;
   ACodePage: Cardinal; const AOnLine: TProcessLineProc): Cardinal;
+begin
+  Result := RunLinesWithPoll(AExe, AArgs, AWorkDir, ACodePage, AOnLine, nil);
+end;
+
+function TProcessRunner.RunLinesWithPoll(const AExe, AArgs, AWorkDir: string;
+  ACodePage: Cardinal; const AOnLine: TProcessLineProc; const AOnPoll: TProc)
+  : Cardinal;
 var
   Output: string;
 begin
-  Result := RunCommand(AExe, AArgs, AWorkDir, ACodePage, AOnLine, Output);
+  Result := RunCommand(AExe, AArgs, AWorkDir, ACodePage, AOnLine,
+    AOnPoll, Output);
 end;
 
 function TProcessRunner.RunCommand(const AExe, AArgs, AWorkDir: string;
-  ACodePage: Cardinal; const AOnLine: TProcessLineProc; out AOutput: string)
-  : Cardinal;
+  ACodePage: Cardinal; const AOnLine: TProcessLineProc; const AOnPoll: TProc;
+  out AOutput: string): Cardinal;
 var
   Exe, SystemExe: string;
 begin
@@ -119,14 +139,16 @@ begin
   end;
   if Assigned(FLogger) then
     FLogger.Debug('Executando processo: ' + Exe + ' ' + AArgs);
-  Result := RunTool(Exe, AArgs, AWorkDir, ACodePage, AOnLine, AOutput);
+  Result := RunTool(Exe, AArgs, AWorkDir, ACodePage, AOnLine, AOnPoll, AOutput);
   if Assigned(FLogger) then
     FLogger.Debug(Format('Processo finalizado com código %d', [Result]));
 end;
 
 function TProcessRunner.RunTool(const AExe, AArgs, AWorkDir: string;
-  ACodePage: Cardinal; const AOnLine: TProcessLineProc; out AOutput: string)
-  : Cardinal;
+  ACodePage: Cardinal; const AOnLine: TProcessLineProc; const AOnPoll: TProc;
+  out AOutput: string): Cardinal;
+const
+  PIPE_BUFFER_SIZE = 512 * 1024;
 var
   Security: TSecurityAttributes;
   ReadPipe, WritePipe: THandle;
@@ -175,7 +197,8 @@ begin
   Security.bInheritHandle := True;
   ReadPipe := 0;
   WritePipe := 0;
-  if not CreatePipe(ReadPipe, WritePipe, @Security, 0) then
+  { Let tools with bulk output refill the pipe while the reader is waiting. }
+  if not CreatePipe(ReadPipe, WritePipe, @Security, PIPE_BUFFER_SIZE) then
     RaiseLastOSError;
   try
     if not SetHandleInformation(ReadPipe, HANDLE_FLAG_INHERIT, 0) then
@@ -209,6 +232,8 @@ begin
       Encoding := TEncoding.GetEncoding(ACodePage);
       repeat
         CheckCancelled;
+        if Assigned(AOnPoll) then
+          AOnPoll();
         if not PeekNamedPipe(ReadPipe, nil, 0, nil, @Available, nil) then
         begin
           if GetLastError = ERROR_BROKEN_PIPE then
@@ -242,6 +267,8 @@ begin
       repeat
         CheckCancelled;
         WaitResult := WaitForSingleObject(ProcessInfo.hProcess, 20);
+        if (WaitResult = WAIT_TIMEOUT) and Assigned(AOnPoll) then
+          AOnPoll();
       until WaitResult <> WAIT_TIMEOUT;
       if WaitResult <> WAIT_OBJECT_0 then
         RaiseLastOSError;

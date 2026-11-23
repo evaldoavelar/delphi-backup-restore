@@ -3,7 +3,8 @@
 interface
 
 uses
-  DUnitX.TestFramework, Core.Types, Tests.Core.RestoreSafety;
+  System.SysUtils, DUnitX.TestFramework, Core.Types, Core.ProcessRunner,
+  Tests.Core.RestoreSafety;
 
 type
 
@@ -16,11 +17,15 @@ type
         ACodePage: Cardinal; const AOnLine: TProcessLineProc): Cardinal;
     end;
 
-    TExtractRunner = class(TTestRunner, IStreamingProcessRunner)
+    TExtractRunner = class(TTestRunner, IStreamingProcessRunner,
+      IPollingProcessRunner)
     public
       ForceTar, FailExtraction: Boolean;
       function RunLines(const AExe, AArgs, AWorkDir: string;
         ACodePage: Cardinal; const AOnLine: TProcessLineProc): Cardinal;
+      function RunLinesWithPoll(const AExe, AArgs, AWorkDir: string;
+        ACodePage: Cardinal; const AOnLine: TProcessLineProc;
+        const AOnPoll: TProc): Cardinal;
     end;
 
   procedure CheckRealBackupZip(AStore: Boolean);
@@ -66,9 +71,9 @@ type
 implementation
 
 uses
-  System.SysUtils, System.Classes, System.Generics.Collections, System.IOUtils,
+  System.Classes, System.Generics.Collections, System.IOUtils,
   System.StrUtils, System.JSON, System.Zip, Winapi.Windows, Core.BackupEngine,
-  Core.CompareEngine, Core.ProcessRunner, Core.RestoreEngine, Core.SystemUtils,
+  Core.CompareEngine, Core.RestoreEngine, Core.SystemUtils,
   Core.ToolConfig, Core.Zip;
 
 procedure TTestZip.FormatsPortugueseZipEta;
@@ -204,19 +209,28 @@ end;
 
 procedure TTestZip.StreamsCarriageReturnsAndSplitUtf8;
 var
-  Runner: IStreamingProcessRunner;
+  Runner: IPollingProcessRunner;
   Lines: TStringList;
+  FirstFrame: UInt64;
 begin
   Assert.IsTrue(Supports(CreateProcessRunner(FLogger),
-    IStreamingProcessRunner, Runner));
+    IPollingProcessRunner, Runner));
+  FirstFrame := 0;
   Lines := TStringList.Create;
   try
-    Assert.AreEqual<Cardinal>(0, Runner.RunLines(ParamStr(0),
+    Assert.AreEqual<Cardinal>(0, Runner.RunLinesWithPoll(ParamStr(0),
       '--zip-pipe-child', FTemp, CP_UTF8, procedure(const ALine: string)
       begin
         Lines.Add(ALine);
         if ALine = '37%' then
+          FirstFrame := GetTickCount64;
+      end, procedure
+      begin
+        if (FirstFrame <> 0) and (GetTickCount64 - FirstFrame >= 100) then
+        begin
           TFile.WriteAllText(TPath.Combine(FTemp, 'pipe-ready'), '');
+          FirstFrame := 0;
+        end;
       end));
     Assert.AreEqual(3, Lines.Count);
     Assert.AreEqual('37%', Lines[0]);
@@ -229,33 +243,69 @@ end;
 
 function TTestZip.TExtractRunner.RunLines(const AExe, AArgs, AWorkDir: string;
 ACodePage: Cardinal; const AOnLine: TProcessLineProc): Cardinal;
+begin
+  Result := RunLinesWithPoll(AExe, AArgs, AWorkDir, ACodePage, AOnLine, nil);
+end;
+
+function TTestZip.TExtractRunner.RunLinesWithPoll(const AExe, AArgs,
+  AWorkDir: string; ACodePage: Cardinal; const AOnLine: TProcessLineProc;
+const AOnPoll: TProc): Cardinal;
 const
-  FirstFile = 'backup top/arquivo de 6 GB.txt';
-  SecondFile = 'backup top/arquivo de 9 GB.txt';
+  FirstFile = 'backup top/primeiro arquivo.txt';
+  SecondFile = 'backup top/segundo arquivo.txt';
   Manifest = 'backup top/manifest.json';
+  MB = 1024 * 1024;
 var
   Start, Finish: Integer;
+
+  procedure ListEntry(const APath, AFolder, ASize, AAttributes: string);
+  begin
+    AOnLine('Path = ' + APath);
+    AOnLine('Folder = ' + AFolder);
+    AOnLine('Size = ' + ASize);
+    AOnLine('Packed Size = 1');
+    AOnLine('Attributes = ' + AAttributes);
+  end;
+
+  procedure WriteFile(const APath: string; ASize: Integer);
+  var
+    Stream: TFileStream;
+  begin
+    Stream := TFileStream.Create(TPath.Combine(Extracted, APath), fmCreate);
+    try
+      Stream.Size := ASize;
+    finally
+      Stream.Free;
+    end;
+  end;
+
 begin
   Result := 0;
-  if StartsStr('-t -v -f ', AArgs) then
+  if StartsStr('l ', AArgs) then
   begin
-    Assert.AreEqual('tar.exe', AExe);
-    AOnLine('drwxrwxrwx  0 0      0          0 Nov 23 2025 backup top/');
-    AOnLine('-rw-rw-rw-  0 0      0 6442450944 Nov 23 16:52 ' + FirstFile);
-    AOnLine('-rw-rw-rw-  0 0      0 9663676416 Nov 23 16:52 ' + SecondFile);
-    AOnLine('-rw-rw-rw-  0 0      0          0 Nov 23 16:52 ' + Manifest);
+    Calls.Add('7z list');
+    Assert.AreEqual('7z.exe', ExtractFileName(AExe));
+    Assert.IsTrue(StartsStr('l -tzip -slt -ba -sccUTF-8 -- ', AArgs), AArgs);
+    Assert.AreEqual<Cardinal>(CP_UTF8, ACodePage);
+    ListEntry('backup top', '+', '0', 'D');
+    ListEntry(FirstFile, '-', '6442450944', ' 01800000');
+    ListEntry(SecondFile, '-', '9663676416', ' -rw-rw-rw-');
+    ListEntry(Manifest, '-', '0', 'A');
     if ForceTar then
-      AOnLine('lrwxrwxrwx  0 0      0          0 Nov 23 16:52 link -> backup top');
+      ListEntry('link', '-', '10', ' lrwxrwxrwx');
     Exit;
   end;
 
   if AExe = 'tar.exe' then
   begin
-    Assert.IsTrue(StartsStr('-x -v -f ', AArgs));
+    Calls.Add('tar extract');
+    Assert.IsTrue(StartsStr('-x -v -f ', AArgs), AArgs);
+    Assert.IsTrue(Assigned(AOnPoll));
     Start := Pos(' -C "', AArgs) + Length(' -C "');
   end
   else
   begin
+    Calls.Add('7z extract');
     Assert.IsFalse(ForceTar);
     Assert.IsTrue(StartsStr('x -tzip -y -aoa -bsp1 ', AArgs));
     Assert.AreEqual<Cardinal>(CP_UTF8, ACodePage);
@@ -271,9 +321,15 @@ begin
   end;
   if AExe = 'tar.exe' then
   begin
+    AOnLine('x backup top/');
     AOnLine('x ' + FirstFile);
-    Sleep(2050);
+    WriteFile(FirstFile, MB);
     AOnLine('x ' + SecondFile);
+    Sleep(2050);
+    AOnPoll();
+    AOnPoll();
+    WriteFile(SecondFile, 2 * MB);
+    AOnLine('x backup top/arquivo ausente.txt');
     AOnLine('x ' + Manifest);
   end
   else
@@ -292,7 +348,8 @@ var
   Engine: TRestoreEngine;
   Zip: string;
   Samples: TList<Integer>;
-  Stages: TStringList;
+  Stages, Status: TStringList;
+  Using7Zip: Boolean;
 begin
   Zip := PrepareZip;
   Fake := TExtractRunner.Create;
@@ -300,35 +357,64 @@ begin
   Fake.ForceTar := AForceTar;
   Samples := TList<Integer>.Create;
   Stages := TStringList.Create;
+  Status := TStringList.Create;
   Engine := TRestoreEngine.Create(FLogger, Fake);
   try
     Engine.Open(Zip, procedure(ACurrent, ATotal: Integer; const AStep: string)
       begin
-        if ATotal = 0 then
-          Stages.Add(AStep)
-        else
+        if StartsStr('Extraindo backup:', AStep) then
         begin
-          Assert.AreEqual(100, ATotal);
           Samples.Add(ACurrent);
+          Status.Add(AStep);
+          if (ACurrent = 100) or ContainsStr(AStep, '%') then
+            Assert.AreEqual(100, ATotal)
+          else
+            Assert.AreEqual(0, ATotal);
           if ACurrent = 40 then
           begin
             Assert.IsTrue(StartsStr('Extraindo backup: 40% (6,0 de 15,0 GB)',
               AStep), AStep);
             Assert.IsTrue(ContainsStr(AStep, 'MB/s - faltam ~'), AStep);
           end;
-        end;
+        end
+        else
+          Stages.Add(AStep);
       end);
-    Assert.AreEqual(3, Stages.Count);
+    Using7Zip := Fake.Calls[Fake.Calls.Count - 1] = '7z extract';
+    Assert.AreEqual(Fake.Calls.Count + 1, Stages.Count);
     Assert.AreEqual('Abrindo backup...', Stages[0]);
-    Assert.AreEqual('Listando arquivos do backup...', Stages[1]);
-    Assert.AreEqual('Lendo manifesto...', Stages[2]);
+    if Fake.Calls.Count = 2 then
+    begin
+      Assert.AreEqual('7z list', Fake.Calls[0]);
+      Assert.AreEqual('Lendo diretório central do backup...', Stages[1]);
+      Assert.IsTrue(Using7Zip = not AForceTar);
+    end;
+    Assert.AreEqual('Lendo manifesto...', Stages[Stages.Count - 1]);
     Assert.AreEqual(3, Samples.Count);
     Assert.AreEqual(0, Samples[0]);
-    Assert.AreEqual(40, Samples[1]);
+    if Using7Zip then
+    begin
+      Assert.IsFalse(AForceTar);
+      Assert.AreEqual(40, Samples[1]);
+    end
+    else
+    begin
+      Assert.AreEqual('tar extract', Fake.Calls[Fake.Calls.Count - 1]);
+      Assert.AreEqual(0, Samples[1]);
+      Assert.IsTrue(StartsStr('Extraindo backup: 0 arquivos, 0,0 MB',
+        Status[0]));
+      Assert.IsTrue(StartsStr('Extraindo backup: 1 arquivo, 1,0 MB',
+        Status[1]));
+      Assert.IsTrue(ContainsStr(Status[1], 'MB/s - 00:'), Status[1]);
+      Assert.IsTrue(EndsStr(' decorridos', Status[1]), Status[1]);
+      Assert.IsTrue(StartsStr('Extraindo backup: 3 arquivos, 3,0 MB',
+        Status[2]));
+    end;
     Assert.AreEqual(100, Samples[2]);
     Assert.AreEqual(1, Engine.Manifest.Versions.Count);
   finally
     Engine.Free;
+    Status.Free;
     Stages.Free;
     Samples.Free;
   end;
@@ -351,6 +437,7 @@ var
   Options: Core.Types.TCompareOptions;
   Diff: TCompareResult;
   Stages: TStringList;
+  ExtractIndex: Integer;
 begin
   FManifest.Versions[0].BdsVersion := '99.0';
   Options := Default (Core.Types.TCompareOptions);
@@ -372,14 +459,17 @@ begin
     finally
       Diff.Free;
     end;
-    Assert.AreEqual(6, Stages.Count);
+    Assert.AreEqual(Fake.Calls.Count + 4, Stages.Count);
     Assert.AreEqual('Abrindo backup...', Stages[0]);
-    Assert.AreEqual('Listando arquivos do backup...', Stages[1]);
-    Assert.IsTrue(StartsStr('Extraindo backup: 0%', Stages[2]), Stages[2]);
-    Assert.IsTrue(StartsStr('Extraindo backup: 40% (6,0 de 15,0 GB)', Stages[3]
-      ), Stages[3]);
-    Assert.IsTrue(StartsStr('Extraindo backup: 100%', Stages[4]), Stages[4]);
-    Assert.AreEqual('Lendo manifesto...', Stages[5]);
+    ExtractIndex := Fake.Calls.Count;
+    Assert.AreEqual('tar extract', Fake.Calls[ExtractIndex - 1]);
+    Assert.IsTrue(StartsStr('Extraindo backup: 0 arquivos',
+      Stages[ExtractIndex]));
+    Assert.IsTrue(StartsStr('Extraindo backup: 1 arquivo, 1,0 MB',
+      Stages[ExtractIndex + 1]));
+    Assert.IsTrue(StartsStr('Extraindo backup: 3 arquivos, 3,0 MB',
+      Stages[ExtractIndex + 2]));
+    Assert.AreEqual('Lendo manifesto...', Stages[ExtractIndex + 3]);
     Assert.IsFalse(DirectoryExists(Fake.Extracted));
   finally
     Stages.Free;

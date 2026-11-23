@@ -377,43 +377,286 @@ begin
     ALogger.Warn('Não foi possível listar o conteúdo do ZIP: ' + AZip);
 end;
 
-function TryParseTarListing(const ALine: string; out AName: string;
-out ASize: Int64): Boolean;
-var
-  Field, First, P: Integer;
-begin
-  Result := False;
-  P := 1;
-  { bsdtar -tv prints mode, link count, owner, group, size and three date
-    fields. The remainder is the filename, including any spaces. }
-  for Field := 1 to 8 do
-  begin
-    while (P <= Length(ALine)) and (ALine[P] = ' ') do
-      Inc(P);
-    First := P;
-    while (P <= Length(ALine)) and (ALine[P] <> ' ') do
-      Inc(P);
-    if First = P then
-      Exit;
-    if (Field = 5) and (not TryStrToInt64(Copy(ALine, First, P - First), ASize)
-      or (ASize < 0)) then
-      Exit;
-  end;
-  AName := StringReplace(Copy(ALine, P + 1, MaxInt), '/', '\', [rfReplaceAll]);
-  Result := AName <> '';
-end;
-
 function IsPlainZipPath(const AName: string): Boolean;
 var
+  C: Char;
   Part: string;
 begin
   Result := False;
-  if (AName[1] = '\') or (Pos(':', AName) > 0) then
+  if (AName = '') or CharInSet(AName[1], ['\', '/']) then
     Exit;
-  for Part in AName.Split(['\']) do
-    if Part = '..' then
+  for C in AName do
+    if CharInSet(C, [#0 .. #31, ':', '"', '<', '>', '|', '*', '?']) then
+      Exit;
+  for Part in AName.Split(['\', '/']) do
+    if (Part <> '') and CharInSet(Part[Length(Part)], ['.', ' ']) then
       Exit;
   Result := True;
+end;
+
+function IsPlain7ZipAttributes(const AAttributes: string): Boolean;
+var
+  Attributes, Mode: string;
+  C: Char;
+  Space: Integer;
+  Flags: Int64;
+begin
+  Attributes := AAttributes;
+  Space := Pos(' ', Attributes);
+  if Space > 0 then
+  begin
+    Mode := Copy(Attributes, Space + 1, MaxInt);
+    if (Length(Mode) = 8) and TryStrToInt64('$' + Mode, Flags) then
+      Exit((Flags and ($F0000000 or FILE_ATTRIBUTE_REPARSE_POINT)) = 0);
+    if (Length(Mode) <> 10) or not CharInSet(Mode[1], ['-', 'd']) then
+      Exit(False);
+    SetLength(Attributes, Space - 1);
+  end;
+  for C in Attributes do
+    if not CharInSet(C, ['R', 'H', 'S', 'D', 'A', 'N', 'T', 'C', 'O', 'E', 'I'])
+    then
+      Exit(False);
+  Result := True;
+end;
+
+type
+  T7ZipListing = record
+    Plain, HaveEntry, HaveFolder, IsFolder, HaveAttributes: Boolean;
+    Total, EntrySize: Int64;
+    function FinishEntry: Boolean;
+    procedure ReadLine(const ALine: string);
+  end;
+
+function T7ZipListing.FinishEntry: Boolean;
+begin
+  Result := not HaveEntry or (HaveFolder and HaveAttributes and (EntrySize >= 0)
+    and (EntrySize <= High(Int64) - Total));
+  if Result and HaveEntry and not IsFolder then
+    Inc(Total, EntrySize);
+end;
+
+procedure T7ZipListing.ReadLine(const ALine: string);
+const
+  PathPrefix = 'Path = ';
+  FolderPrefix = 'Folder = ';
+  SizePrefix = 'Size = ';
+  AttrPrefix = 'Attributes = ';
+var
+  Value: string;
+begin
+  if not Plain then
+    Exit;
+  if StartsStr(PathPrefix, ALine) then
+  begin
+    Plain := FinishEntry and
+      IsPlainZipPath(Copy(ALine, Length(PathPrefix) + 1, MaxInt));
+    HaveEntry := True;
+    HaveFolder := False;
+    HaveAttributes := False;
+    EntrySize := -1;
+  end
+  else if StartsStr(FolderPrefix, ALine) then
+  begin
+    Value := Copy(ALine, Length(FolderPrefix) + 1, MaxInt);
+    Plain := HaveEntry and not HaveFolder and ((Value = '+') or (Value = '-'));
+    HaveFolder := True;
+    IsFolder := Value = '+';
+  end
+  else if StartsStr(SizePrefix, ALine) then
+    Plain := HaveFolder and (EntrySize = -1) and
+      TryStrToInt64(Copy(ALine, Length(SizePrefix) + 1, MaxInt), EntrySize) and
+      (EntrySize >= 0)
+  else if StartsStr(AttrPrefix, ALine) then
+  begin
+    Plain := HaveEntry and (EntrySize >= 0) and not HaveAttributes and
+      IsPlain7ZipAttributes(Copy(ALine, Length(AttrPrefix) + 1, MaxInt));
+    HaveAttributes := True;
+  end;
+end;
+
+function TryRead7ZipTotal(const AExe, AZip: string;
+const ARunner: IStreamingProcessRunner; out ATotal: Int64): Boolean;
+var
+  Listing: T7ZipListing;
+  Code: Cardinal;
+begin
+  Listing := Default (T7ZipListing);
+  Listing.Plain := True;
+  { Read central-directory metadata and keep the tar fallback for special
+    entries. RunLines skips the empty lines between records. }
+  Code := ARunner.RunLines(AExe, 'l -tzip -slt -ba -sccUTF-8 -- ' + Quote(AZip),
+    '', CP_UTF8, procedure(const ALine: string)
+    begin
+      Listing.ReadLine(ALine);
+    end);
+  Result := (Code = 0) and Listing.Plain and Listing.FinishEntry;
+  ATotal := Listing.Total;
+end;
+
+function ExtractWith7Zip(const AExe, AZip, ADest: string; ATotal: Int64;
+const ARunner: IStreamingProcessRunner; const AProgress: TProgressProc;
+out ADiagnostic: string): Cardinal;
+var
+  Progress: TZipProgress;
+  Diagnostic: string;
+begin
+  Progress := Default (TZipProgress);
+  Progress.Action := 'Extraindo backup';
+  Progress.Callback := AProgress;
+  Progress.LastPercent := -1;
+  Progress.Total := ATotal;
+  Progress.Started := GetTickCount64;
+  Progress.Report(0);
+  Result := ARunner.RunLines(AExe, 'x -tzip -y -aoa -bsp1 -bso0 -sccUTF-8 -o' +
+    Quote(ADest) + ' -- ' + Quote(AZip), '', CP_UTF8,
+    procedure(const ALine: string)
+    begin
+      if not Progress.Report7ZipLine(ALine) and (Trim(ALine) <> '') then
+        Diagnostic := ALine;
+    end);
+  ADiagnostic := Diagnostic;
+  if Result = 0 then
+  begin
+    Progress.Done := Progress.Total;
+    Progress.Report(100, True);
+  end;
+end;
+
+function FormatTarExtraction(AFiles, ABytes: Int64; AElapsedMs: UInt64): string;
+var
+  Settings: TFormatSettings;
+  Scale, Speed: Double;
+  Seconds: Int64;
+  Units, Elapsed, CountLabel: string;
+begin
+  Settings := TFormatSettings.Create;
+  Settings.DecimalSeparator := ',';
+  Settings.ThousandSeparator := '.';
+  Scale := MEBIBYTE;
+  Units := 'MB';
+  if ABytes >= GIBIBYTE then
+  begin
+    Scale := GIBIBYTE;
+    Units := 'GB';
+  end;
+  CountLabel := 'arquivos';
+  if AFiles = 1 then
+    CountLabel := 'arquivo';
+  Seconds := AElapsedMs div 1000;
+  Elapsed := Format('%.2d:%.2d', [(Seconds div 60) mod 60, Seconds mod 60]);
+  if Seconds >= 3600 then
+    Elapsed := Format('%.2d:', [Seconds div 3600]) + Elapsed;
+  Speed := 0;
+  if AElapsedMs > 0 then
+    Speed := (ABytes / MEBIBYTE) / (AElapsedMs / 1000.0);
+  Result := Format('Extraindo backup: %s %s, %s %s - %s MB/s - %s decorridos',
+    [FormatFloat('#,##0', AFiles, Settings), CountLabel, FormatFloat('0.0',
+    ABytes / Scale, Settings), Units, FormatFloat('0', Speed, Settings),
+    Elapsed]);
+end;
+
+type
+  TTarExtractionProgress = record
+    Callback: TProgressProc;
+    Dest, Pending: string;
+    Files, Bytes: Int64;
+    Started, LastReport: UInt64;
+    procedure FinishPending;
+    procedure ReadEntry(const AEntry: string);
+    procedure Report(ACompleted: Boolean);
+  end;
+
+procedure TTarExtractionProgress.FinishPending;
+var
+  Info: TWin32FileAttributeData;
+begin
+  if (Pending <> '') and GetFileAttributesEx(PChar(Dest + Pending),
+    GetFileExInfoStandard, @Info) and
+    (Info.dwFileAttributes and (FILE_ATTRIBUTE_DIRECTORY or
+    FILE_ATTRIBUTE_REPARSE_POINT) = 0) then
+  begin
+    Inc(Files);
+    Inc(Bytes, (Int64(Info.nFileSizeHigh) shl 32) or Info.nFileSizeLow);
+  end;
+end;
+
+procedure TTarExtractionProgress.ReadEntry(const AEntry: string);
+begin
+  { bsdtar announces an entry before writing it. The next entry confirms
+    that the previous one can be measured on disk. }
+  FinishPending;
+  Pending := StringReplace(AEntry, '/', '\', [rfReplaceAll]);
+  while StartsStr('.\', Pending) do
+    Delete(Pending, 1, 2);
+  if not IsPlainZipPath(Pending) or (Pending[Length(Pending)] = '\') then
+    Pending := '';
+end;
+
+procedure TTarExtractionProgress.Report(ACompleted: Boolean);
+var
+  Tick: UInt64;
+  Status: string;
+begin
+  if not Assigned(Callback) then
+    Exit;
+  Tick := GetTickCount64;
+  if not ACompleted and (LastReport <> 0) and
+    (Tick - LastReport < PROGRESS_INTERVAL_MS) then
+    Exit;
+  Status := FormatTarExtraction(Files, Bytes, Tick - Started);
+  if ACompleted then
+    Callback(100, 100, Status)
+  else
+    Callback(0, 0, Status);
+  LastReport := Tick;
+end;
+
+function ExtractWithTar(const AZip, ADest: string;
+const ARunner: IStreamingProcessRunner; const AProgress: TProgressProc;
+out ADiagnostic: string): Cardinal;
+var
+  PollingRunner: IPollingProcessRunner;
+  OnLine: TProcessLineProc;
+  Args, Diagnostic: string;
+  Progress: TTarExtractionProgress;
+  Polling: Boolean;
+begin
+  Args := '-x -v -f ' + Quote(AZip) + ' -C ' + Quote(ADest);
+  Progress := Default (TTarExtractionProgress);
+  Progress.Callback := AProgress;
+  Progress.Dest := IncludeTrailingPathDelimiter
+    (LongPathPrefix(NormalizePath(ADest)));
+  Progress.Started := GetTickCount64;
+  Polling := Assigned(AProgress) and Supports(ARunner, IPollingProcessRunner,
+    PollingRunner);
+  Progress.Report(False);
+  OnLine := procedure(const ALine: string)
+    begin
+      if not StartsStr('x ', ALine) then
+      begin
+        Diagnostic := ALine;
+        Exit;
+      end;
+      if not Assigned(AProgress) then
+        Exit;
+      Progress.ReadEntry(Copy(ALine, 3, MaxInt));
+      if not Polling then
+        Progress.Report(False);
+    end;
+  if Polling then
+    Result := PollingRunner.RunLinesWithPoll('tar.exe', Args, '', GetACP,
+      OnLine, procedure
+      begin
+        Progress.Report(False);
+      end)
+  else
+    Result := ARunner.RunLines('tar.exe', Args, '', GetACP, OnLine);
+  ADiagnostic := Diagnostic;
+  if (Result = 0) and Assigned(AProgress) then
+  begin
+    Progress.FinishPending;
+    Progress.Report(True);
+  end;
 end;
 
 function ExtractBackupZip(const AZip, ADest: string;
@@ -421,12 +664,9 @@ const ARunner: IProcessRunner; const ALogger: ILogger;
 const AProgress: TProgressProc): Boolean;
 var
   Runner: IStreamingProcessRunner;
-  Sizes: TDictionary<string, Int64>;
-  Progress: TZipProgress;
-  Exe, Args, Name, Diagnostic: string;
-  Code, CodePage: Cardinal;
-  Size, Pending: Int64;
-  HaveSizes, PlainEntries, Using7Zip: Boolean;
+  SevenZip, Diagnostic: string;
+  Total: Int64;
+  Code: Cardinal;
 begin
   ALogger.Debug('Preparando extração do ZIP: ' + AZip);
   if not Supports(ARunner, IStreamingProcessRunner, Runner) then
@@ -436,106 +676,29 @@ begin
     Exit(ARunner.UnzipTo(AZip, ADest));
   end;
 
-  Sizes := TDictionary<string, Int64>.Create;
-  try
-    Progress := Default (TZipProgress);
-    Progress.Action := 'Extraindo backup';
-    Progress.Callback := AProgress;
-    Progress.LastPercent := -1;
-    HaveSizes := True;
-    PlainEntries := True;
+  SevenZip := Find7Zip;
+  if SevenZip <> '' then
+  begin
     if Assigned(AProgress) then
-      AProgress(0, 0, 'Listando arquivos do backup...');
-    Code := Runner.RunLines('tar.exe', '-t -v -f ' + Quote(AZip), '', GetACP,
-      procedure(const ALine: string)
-      begin
-        if not TryParseTarListing(ALine, Name, Size) then
-        begin
-          HaveSizes := False;
-          Diagnostic := ALine;
-          Exit;
-        end;
-        PlainEntries := PlainEntries and CharInSet(ALine[1], ['-', 'd']) and
-          IsPlainZipPath(Name);
-        if ALine[1] = '-' then
-        begin
-          if Sizes.ContainsKey(Name) or (Size > High(Int64) - Progress.Total)
-          then
-            HaveSizes := False
-          else
-          begin
-            Sizes.Add(Name, Size);
-            Inc(Progress.Total, Size);
-          end;
-        end;
-      end);
-    HaveSizes := HaveSizes and (Code = 0);
-    if not HaveSizes then
-      ALogger.Warn('Não foi possível listar os tamanhos do ZIP: ' + Diagnostic);
-
-    { Keep bsdtar's extraction checks for archives containing special entries. }
-    if HaveSizes and PlainEntries then
-      Exe := Find7Zip;
-    Using7Zip := Exe <> '';
-    if Using7Zip then
+      AProgress(0, 0, 'Lendo diretório central do backup...');
+    if not TryRead7ZipTotal(SevenZip, AZip, Runner, Total) then
     begin
-      Args := 'x -tzip -y -aoa -bsp1 -bso0 -sccUTF-8 -o' + Quote(ADest) + ' -- '
-        + Quote(AZip);
-      CodePage := CP_UTF8;
-    end
-    else
-    begin
-      Exe := 'tar.exe';
-      Args := '-x -v -f ' + Quote(AZip) + ' -C ' + Quote(ADest);
-      CodePage := GetACP;
+      ALogger.Debug
+        ('Listagem do 7-Zip indisponível para a extração; usando tar.');
+      SevenZip := '';
     end;
-
-    Pending := 0;
-    Diagnostic := '';
-    Progress.Started := GetTickCount64;
-    if HaveSizes then
-      Progress.Report(0)
-    else if Assigned(AProgress) then
-      AProgress(0, 0, 'Extraindo backup...');
-    Code := Runner.RunLines(Exe, Args, '', CodePage,
-      procedure(const ALine: string)
-      begin
-        if Using7Zip then
-        begin
-          if not Progress.Report7ZipLine(ALine) and (Trim(ALine) <> '') then
-            Diagnostic := ALine;
-        end
-        else
-        begin
-          if not StartsStr('x ', ALine) then
-          begin
-            Diagnostic := ALine;
-            Exit;
-          end;
-          if not HaveSizes then
-            Exit;
-          { A subsequent entry confirms the previous file was processed. }
-          Inc(Progress.Done, Pending);
-          TryTakeEntrySize(ALine, 'x ', Sizes, Pending);
-          Progress.Report(Min(99, ZipPercent(Progress.Done, Progress.Total)));
-        end;
-      end);
-    Result := Code = 0;
-    if Result then
-    begin
-      if HaveSizes then
-      begin
-        Progress.Done := Progress.Total;
-        Progress.Report(100, True);
-      end;
-      ALogger.Debug('Arquivo ZIP extraído: ' + AZip);
-    end
-    else
-      ALogger.Warn(Format('A extração do arquivo ZIP falhou (código %d): %s',
-        [Code, Diagnostic]));
-  finally
-    Sizes.Free;
   end;
+  if SevenZip <> '' then
+    Code := ExtractWith7Zip(SevenZip, AZip, ADest, Total, Runner, AProgress,
+      Diagnostic)
+  else
+    Code := ExtractWithTar(AZip, ADest, Runner, AProgress, Diagnostic);
+  Result := Code = 0;
+  if Result then
+    ALogger.Debug('Arquivo ZIP extraído: ' + AZip)
+  else
+    ALogger.Warn(Format('A extração do arquivo ZIP falhou (código %d): %s',
+      [Code, Diagnostic]));
 end;
 
 end.

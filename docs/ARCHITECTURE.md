@@ -116,6 +116,8 @@ function CreateProcessRunner(const ALogger: ILogger;
 `CreateProcess` com `CREATE_NO_WINDOW`, pipes para stdout/stderr, leitura contínua (evita deadlock).
 O callback opcional de cancelamento é consultado durante a espera pelo processo, mesmo sem saída no pipe.
 Quando sinalizado, o executor encerra o processo antes de devolver o controle ao chamador.
+`IPollingProcessRunner` permite atualizar o progresso durante a espera, inclusive quando o processo
+fica sem emitir linhas.
 Saída de robocopy/reg decodificada com a code page OEM (`GetOEMCP`). `CopyTree`: `robocopy src dst /E|/MIR
 /COPY:DAT /DCOPY:T /R:1 /W:1 /MT:16 /NP /NFL /NDL /XJ /XD ... /XF ...`; sucesso quando exit code < 8.
 `CopyFile`: `robocopy dir dst arquivo /COPY:DAT /R:1 /W:1`. `RegExport`: `reg export <key> <file> /y`
@@ -264,9 +266,10 @@ function RemapRegFileText(const ARegText, AOldProfile, ANewProfile: string): str
 Nota de ordenação: o manifest guarda, por versão, `BdsVersion` e o nome; para ordenar use a era deduzida
 do produto (Delphi 5/6/7 têm BdsVersion 5.0/6.0/7.0 em `Borland\Delphi`) — por isso `TManifestVersion`
 deve ser casado com `AInstalled.FindByBds` e ordenado por `SortKey` da instalada (que tem a era).
-Na abertura do ZIP, `Core.Zip` lista os tamanhos descompactados com tar e extrai com 7-Zip, quando
-disponível para arquivos e pastas comuns, ou tar. O callback recebe as etapas de abertura e
-o progresso da extração. Com tar, a contagem avança à medida que os arquivos são concluídos.
+Para arquivos e pastas comuns, `Core.Zip` lê os tamanhos descompactados do diretório central
+com `7z l -slt -ba` e usa o percentual do 7-Zip durante a extração. O tar extrai em uma
+única passagem e relata, a cada dois segundos, a contagem e o tamanho em disco dos arquivos
+concluídos, a velocidade média e o tempo decorrido. O mesmo callback alimenta a UI e a CLI.
 Execute: exporta o registro atual das versões escolhidas para `%TEMP%\DelphiBackupRestore_pre_<stamp>\`;
 para cada versão em ordem crescente: `CopyTree(..., Mirror=True)` dos ikFolder cuja lista Versions contém
 a versão (item compartilhado entre versões é copiado **uma única vez**, na primeira versão em que aparece —

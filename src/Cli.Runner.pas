@@ -80,6 +80,8 @@ begin
   else
   begin
     U8 := UTF8String(Line);
+    { Write the complete line directly to a redirected handle. There is no
+      Delphi text buffer to flush, so readers receive progress during the run. }
     WriteFile(GOut, PAnsiChar(U8)^, Length(U8), Written, nil);
   end;
 end;
