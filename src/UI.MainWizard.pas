@@ -140,6 +140,8 @@ type
     procedure BrowseFolderClick(Sender: TObject);
     procedure BrowseZipClick(Sender: TObject);
     procedure WizardCloseQuery(Sender: TObject; var CanClose: Boolean);
+  protected
+    procedure CreateParams(var Params: TCreateParams); override;
   public
     constructor Create(AOwner: TComponent); override;
     destructor Destroy; override;
@@ -198,6 +200,15 @@ begin
 end;
 
 { TMainWizard }
+
+procedure TMainWizard.CreateParams(var Params: TCreateParams);
+begin
+  inherited CreateParams(Params);
+  { Top-level window with its own taskbar button: the form is built in code
+    (no DFM) and would otherwise be owned by the hidden TApplication window. }
+  Params.WndParent := 0;
+  Params.ExStyle := Params.ExStyle or WS_EX_APPWINDOW;
+end;
 
 constructor TMainWizard.Create(AOwner: TComponent);
 var
