@@ -2,6 +2,8 @@
 
 interface
 
+uses System.Classes, System.Win.Registry;
+
 function IsRunningAsAdmin: Boolean;
 function IsDelphiIdeRunning(out AProcessNames: string): Boolean;
 function ExpandEnvVars(const AText: string): string;
@@ -11,18 +13,24 @@ function GetAppDataDir: string;
 function GetDocumentsDir: string;
 function GetSystem32Dir: string;
 function GetSysWow64Dir: string;
+function RealFileSystemPath(const APath: string): string;
 function GetFileVersionText(const AFileName: string): string;
 function GetFileCompany(const AFileName: string): string;
 function CompareVersionText(const A, B: string): Integer;
+function IsAbsoluteFileSystemPath(const APath: string): Boolean;
+function PathHasReparsePoint(const APath: string): Boolean;
 function NormalizePath(const APath: string): string;
 function IsPathInside(const APath, AParent: string): Boolean;
 function GetUserPathEnv: string;
 procedure SetUserPathEnv(const AValue: string);
+procedure WritePathValue(ARegistry: TRegistry; const AValue: string);
 function ToolVersion: string;
 function MachineName: string;
 { Number of files below AFolder (recursive, long paths supported, reparse points
   not followed). -1 when the folder cannot be read. }
 function CountFilesInTree(const AFolder: string): Integer;
+function ListFilesInTree(const AFolder: string; AFiles: TStrings): Boolean;
+function CreateTempDirectory(const APrefix: string): string;
 { Deletes AFolder and everything below it (long paths supported). True when the
   folder no longer exists afterwards. }
 function DeleteTree(const AFolder: string): Boolean;
@@ -30,8 +38,8 @@ function DeleteTree(const AFolder: string): Boolean;
 implementation
 
 uses
-  System.SysUtils, System.Classes, System.Win.Registry, Winapi.Windows,
-  Winapi.ShlObj, Winapi.TlHelp32;
+  System.SysUtils, System.IOUtils, Winapi.Windows, Winapi.ShlObj,
+  Winapi.TlHelp32, Core.Types, Core.Logger;
 
 function GetSystemWow64Directory(lpBuffer: PWideChar; uSize: UINT): UINT;
   stdcall; external kernel32 name 'GetSystemWow64DirectoryW';
@@ -157,6 +165,29 @@ begin
   Result := ExcludeTrailingPathDelimiter(string(Buffer));
 end;
 
+function RealFileSystemPath(const APath: string): string;
+var
+  IsWow: BOOL;
+  NativeDir, P: string;
+  L: ILogger;
+begin
+  L := CreateLogger;
+  L.Debug('Resolvendo caminho para acesso ao sistema de arquivos: ' + APath);
+  Result := APath;
+  if not IsWow64Process(GetCurrentProcess, IsWow) then
+    RaiseLastOSError;
+  if not IsWow or not IsAbsoluteFileSystemPath(APath) then
+    Exit;
+  NativeDir := GetSystem32Dir;
+  P := NormalizePath(StringReplace(APath, '/', '\', [rfReplaceAll]));
+  if IsPathInside(P, NativeDir) then
+  begin
+    Result := ExtractFileDir(NativeDir) + '\Sysnative' +
+      Copy(P, Length(NativeDir) + 1, MaxInt);
+    L.Debug('Caminho nativo no WOW64: ' + Result);
+  end;
+end;
+
 function VersionValue(const AFileName, AName: string): string;
 var
   Size, Handle: DWORD;
@@ -262,6 +293,48 @@ begin
   Result := 0;
 end;
 
+function IsAbsoluteFileSystemPath(const APath: string): Boolean;
+var
+  P, Part: string;
+  I, Start: Integer;
+  IsUnc: Boolean;
+begin
+  Result := False;
+  P := StringReplace(APath, '/', '\', [rfReplaceAll]);
+  IsUnc := Copy(P, 1, 2) = '\\';
+  if IsUnc then
+  begin
+    I := Pos('\', Copy(P, 3, MaxInt)) + 2;
+    if (I <= 3) or (I >= Length(P)) or (P[I + 1] = '\') then
+      Exit;
+    Start := 3;
+  end
+  else
+  begin
+    if (Length(P) < 3) or not CharInSet(P[1], ['A' .. 'Z', 'a' .. 'z']) or
+      (P[2] <> ':') or (P[3] <> '\') then
+      Exit;
+    Start := 4;
+  end;
+  for I := Start to Length(P) + 1 do
+  begin
+    if (I <= Length(P)) and CharInSet(P[I], [#0 .. #31, ':', '*', '?', '"', '<',
+      '>', '|']) then
+      Exit;
+    if (I > Length(P)) or (P[I] = '\') then
+    begin
+      Part := Copy(P, Start, I - Start);
+      if ((Part = '') and (I <= Length(P))) or (Part = '.') or (Part = '..')
+      then
+        Exit;
+      if (Part <> '') and CharInSet(Part[Length(Part)], [' ', '.']) then
+        Exit;
+      Start := I + 1;
+    end;
+  end;
+  Result := True;
+end;
+
 function LongPathName(const APath: string): string;
 var
   Buffer: array [0 .. 32767] of Char;
@@ -283,7 +356,8 @@ begin
     Result := ExpandFileName(APath);
     { resolve 8.3 aliases ("PROGRA~2") of existing paths, so an alias never escapes
       a comparison against the long name }
-    if (Pos('~', Result) > 0) and (FileExists(Result) or DirectoryExists(Result)) then
+    if (Pos('~', Result) > 0) and (FileExists(Result) or DirectoryExists(Result))
+    then
       Result := LongPathName(Result);
     { keep drive roots as "C:\": a bare "C:" means "current folder of drive C" }
     if not((Length(Result) = 3) and (Result[2] = ':')) then
@@ -330,17 +404,31 @@ begin
   end;
 end;
 
+procedure WritePathValue(ARegistry: TRegistry; const AValue: string);
+var
+  L: ILogger;
+begin
+  L := CreateLogger;
+  L.Debug('Gravando valor Path no registro.');
+  if (Pos('%', AValue) > 0) or (ARegistry.ValueExists('Path') and
+    (ARegistry.GetDataType('Path') = rdExpandString)) then
+    ARegistry.WriteExpandString('Path', AValue)
+  else
+    ARegistry.WriteString('Path', AValue);
+  L.Debug('Valor Path gravado.');
+end;
+
 procedure SetUserPathEnv(const AValue: string);
 var
   Reg: TRegistry;
 begin
-  Reg := TRegistry.Create(KEY_WRITE);
+  Reg := TRegistry.Create(KEY_QUERY_VALUE or KEY_SET_VALUE);
   try
     Reg.RootKey := HKEY_CURRENT_USER;
     if not Reg.OpenKey('Environment', True) then
       RaiseLastOSError;
     try
-      Reg.WriteString('Path', AValue);
+      WritePathValue(Reg, AValue);
     finally
       Reg.CloseKey;
     end;
@@ -361,7 +449,40 @@ begin
     Result := '\\?\' + APath;
 end;
 
-function CountFilesInTreeLong(const ALongDir: string): Integer;
+function PathHasReparsePoint(const APath: string): Boolean;
+var
+  P, Parent: string;
+  Attr, Err: DWORD;
+begin
+  P := NormalizePath(StringReplace(APath, '/', '\', [rfReplaceAll]));
+  while P <> '' do
+  begin
+    Attr := GetFileAttributesW(PChar(LongPathPrefix(P)));
+    if Attr <> INVALID_FILE_ATTRIBUTES then
+    begin
+      if (Attr and FILE_ATTRIBUTE_REPARSE_POINT) <> 0 then
+        Exit(True);
+    end
+    else
+    begin
+      Err := GetLastError;
+      if (Err <> ERROR_FILE_NOT_FOUND) and (Err <> ERROR_PATH_NOT_FOUND) and
+        (Err <> ERROR_BAD_NETPATH) and (Err <> ERROR_BAD_NET_NAME) and
+        (Err <> ERROR_BAD_PATHNAME) then
+        Exit(True);
+    end;
+    Parent := ExcludeTrailingPathDelimiter(ExtractFilePath(P));
+    if (Parent = P) or ((Length(Parent) = 2) and (Parent[2] = ':')) or
+      (Copy(Parent, 1, 2) = '\\') and (Pos('\', Copy(Parent, 3, MaxInt)) = 0)
+    then
+      Break;
+    P := Parent;
+  end;
+  Result := False;
+end;
+
+function CountFilesInTreeLong(const ALongDir, ARelDir: string;
+  AFiles: TStrings): Integer;
 var
   Find: TWin32FindData;
   H: THandle;
@@ -371,25 +492,45 @@ begin
   Result := 0;
   H := FindFirstFile(PChar(IncludeTrailingPathDelimiter(ALongDir) + '*'), Find);
   if H = INVALID_HANDLE_VALUE then
+  begin
+    if GetLastError = ERROR_FILE_NOT_FOUND then
+      Exit(0);
     Exit(-1);
+  end;
   try
     repeat
       Name := Find.cFileName;
-      if (Name = '.') or (Name = '..') then
-        Continue;
-      if (Find.dwFileAttributes and FILE_ATTRIBUTE_DIRECTORY) <> 0 then
+      if (Name <> '.') and (Name <> '..') then
       begin
         if (Find.dwFileAttributes and FILE_ATTRIBUTE_REPARSE_POINT) <> 0 then
-          Continue;
-        Sub := CountFilesInTreeLong
-          (IncludeTrailingPathDelimiter(ALongDir) + Name);
-        if Sub < 0 then
+        begin
+          if AFiles <> nil then
+            Exit(-1);
+          if (Find.dwFileAttributes and FILE_ATTRIBUTE_DIRECTORY) = 0 then
+            Inc(Result);
+        end
+        else if (Find.dwFileAttributes and FILE_ATTRIBUTE_DIRECTORY) <> 0 then
+        begin
+          Sub := CountFilesInTreeLong(IncludeTrailingPathDelimiter(ALongDir) +
+            Name, ARelDir + Name + '\', AFiles);
+          if Sub < 0 then
+            Exit(-1);
+          Inc(Result, Sub);
+        end
+        else
+        begin
+          Inc(Result);
+          if AFiles <> nil then
+            AFiles.Add(ARelDir + Name);
+        end;
+      end;
+      if not FindNextFile(H, Find) then
+      begin
+        if GetLastError <> ERROR_NO_MORE_FILES then
           Exit(-1);
-        Inc(Result, Sub);
-      end
-      else
-        Inc(Result);
-    until not FindNextFile(H, Find);
+        Break;
+      end;
+    until False;
   finally
     Winapi.Windows.FindClose(H);
   end;
@@ -402,7 +543,76 @@ begin
   P := NormalizePath(AFolder);
   if (P = '') or not DirectoryExists(P) then
     Exit(-1);
-  Result := CountFilesInTreeLong(LongPathPrefix(P));
+  Result := CountFilesInTreeLong(LongPathPrefix(P), '', nil);
+end;
+
+function ListFilesInTree(const AFolder: string; AFiles: TStrings): Boolean;
+var
+  L: ILogger;
+begin
+  L := CreateLogger;
+  L.Debug('Listando nomes dos arquivos em ' + AFolder);
+  AFiles.Clear;
+  Result := IsAbsoluteFileSystemPath(AFolder) and
+    not PathHasReparsePoint(AFolder) and
+    (CountFilesInTreeLong(LongPathPrefix(NormalizePath(AFolder)), '',
+    AFiles) >= 0);
+  if Result then
+    L.Debug(Format('%d nomes de arquivos encontrados.', [AFiles.Count]))
+  else
+  begin
+    AFiles.Clear;
+    L.Warn('Não foi possível listar os arquivos em ' + AFolder);
+  end;
+end;
+
+function CreateTempDirectory(const APrefix: string): string;
+var
+  G: TGUID;
+  Bases: array [0 .. 2] of string;
+  Base, Name: string;
+  I: Integer;
+  Err: DWORD;
+  L: ILogger;
+begin
+  L := CreateLogger;
+  L.Debug('Criando pasta temporária.');
+  if CreateGUID(G) <> S_OK then
+    raise EDelphiBackupError.Create
+      ('Não foi possível gerar um nome temporário.');
+  Name := APrefix + GUIDToString(G);
+  { %TEMP% may be empty or point to a missing folder (sandboxes, broken
+    profiles): fall back to %LOCALAPPDATA%\Temp, then to <exe>\temp. }
+  Bases[0] := TPath.GetTempPath;
+  Bases[1] := EnvValue('LOCALAPPDATA');
+  if Bases[1] <> '' then
+    Bases[1] := TPath.Combine(Bases[1], 'Temp');
+  Bases[2] := TPath.Combine(ExtractFilePath(ParamStr(0)), 'temp');
+  Err := ERROR_PATH_NOT_FOUND;
+  for I := Low(Bases) to High(Bases) do
+  begin
+    Base := Bases[I];
+    if (Base = '') or not IsAbsoluteFileSystemPath
+      (ExcludeTrailingPathDelimiter(Base)) then
+      Continue;
+    if (I = High(Bases)) and not DirectoryExists(Base) then
+      ForceDirectories(Base);
+    if not DirectoryExists(Base) then
+    begin
+      L.Warn('Pasta temporária indisponível: ' + Base);
+      Continue;
+    end;
+    Result := TPath.Combine(Base, Name);
+    if Winapi.Windows.CreateDirectory(PChar(Result), nil) then
+    begin
+      L.Debug('Pasta temporária criada: ' + Result);
+      Exit;
+    end;
+    Err := GetLastError;
+    L.Warn('Não foi possível criar pasta temporária em ' + Base + ': ' +
+      SysErrorMessage(Err));
+  end;
+  RaiseLastOSError(Err);
 end;
 
 procedure DeleteTreeLong(const ALongDir: string);
@@ -419,7 +629,8 @@ begin
         if (Name = '.') or (Name = '..') then
           Continue;
         Full := IncludeTrailingPathDelimiter(ALongDir) + Name;
-        if (Find.dwFileAttributes and FILE_ATTRIBUTE_READONLY) <> 0 then
+        if (Find.dwFileAttributes and FILE_ATTRIBUTE_READONLY <> 0) and
+          (Find.dwFileAttributes and FILE_ATTRIBUTE_REPARSE_POINT = 0) then
           SetFileAttributes(PChar(Full), Find.dwFileAttributes and
             not FILE_ATTRIBUTE_READONLY);
         if (Find.dwFileAttributes and FILE_ATTRIBUTE_DIRECTORY) <> 0 then
@@ -440,24 +651,58 @@ end;
 
 function DeleteTree(const AFolder: string): Boolean;
 var
-  P: string;
-  Attempt: Integer;
+  P, LongDir: string;
+  Attr, Err: DWORD;
+  Attempt, ShareStart: Integer;
+  L: ILogger;
 begin
-  P := NormalizePath(AFolder);
-  { never delete a drive root or an empty/invalid path }
-  if (P = '') or (Length(P) <= 3) then
-    Exit(False);
-  { indexers (TortoiseSVN/TortoiseGit caches, antivirus, Windows Search) may hold a
-    file of a freshly written .svn/.git copy for a few seconds: retry }
+  L := CreateLogger;
+  L.Debug('Removendo pasta: ' + AFolder);
+  Result := False;
+  if not IsAbsoluteFileSystemPath(AFolder) then
+    Exit;
+  P := NormalizePath(StringReplace(AFolder, '/', '\', [rfReplaceAll]));
+  if Length(P) <= 3 then
+    Exit;
+  if Copy(P, 1, 2) = '\\' then
+  begin
+    ShareStart := Pos('\', Copy(P, 3, MaxInt)) + 3;
+    if Pos('\', Copy(P, ShareStart, MaxInt)) = 0 then
+      Exit;
+  end;
+  LongDir := LongPathPrefix(P);
   for Attempt := 1 to 5 do
   begin
-    if DirectoryExists(P) then
-      DeleteTreeLong(LongPathPrefix(P));
-    if not DirectoryExists(P) then
-      Break;
-    Sleep(2000);
+    if PathHasReparsePoint(P) then
+    begin
+      L.Warn('Remoção recusada por ponto de nova análise no caminho: ' + P);
+      Exit;
+    end;
+    Attr := GetFileAttributesW(PChar(LongDir));
+    if Attr = INVALID_FILE_ATTRIBUTES then
+    begin
+      Err := GetLastError;
+      Result := (Err = ERROR_FILE_NOT_FOUND) or (Err = ERROR_PATH_NOT_FOUND);
+      if Result then
+        L.Debug('Pasta removida: ' + P);
+      Exit;
+    end;
+    if (Attr and FILE_ATTRIBUTE_DIRECTORY) = 0 then
+      Exit;
+    DeleteTreeLong(LongDir);
+    if GetFileAttributesW(PChar(LongDir)) = INVALID_FILE_ATTRIBUTES then
+    begin
+      Err := GetLastError;
+      if (Err = ERROR_FILE_NOT_FOUND) or (Err = ERROR_PATH_NOT_FOUND) then
+      begin
+        L.Debug('Pasta removida: ' + P);
+        Exit(True);
+      end;
+    end;
+    if Attempt < 5 then
+      Sleep(2000);
   end;
-  Result := not DirectoryExists(P);
+  L.Warn('Não foi possível remover a pasta: ' + P);
 end;
 
 function ToolVersion: string;

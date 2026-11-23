@@ -12,9 +12,11 @@ uses
   Tests.Core.PathDiscovery in 'Tests.Core.PathDiscovery.pas',
   Tests.Core.SystemUtils in 'Tests.Core.SystemUtils.pas',
   Tests.Core.RestoreEngine in 'Tests.Core.RestoreEngine.pas',
+  Tests.Core.RestoreSafety in 'Tests.Core.RestoreSafety.pas',
   Tests.Core.Manifest in 'Tests.Core.Manifest.pas',
   Tests.Core.CompareEngine in 'Tests.Core.CompareEngine.pas',
-  Tests.Core.Safety in 'Tests.Core.Safety.pas';
+  Tests.Core.Safety in 'Tests.Core.Safety.pas',
+  Tests.Core.Hardening in 'Tests.Core.Hardening.pas';
 
 var
   Runner: ITestRunner;

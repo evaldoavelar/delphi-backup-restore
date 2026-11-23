@@ -16,9 +16,9 @@ function BuildEnvironmentManifest(AVersions: TDelphiVersionList;
 
 implementation
 
-uses System.JSON, System.IOUtils, System.Hash, System.DateUtils, System.Masks,
+uses System.JSON, System.IOUtils, System.DateUtils, System.Masks,
   System.Generics.Collections, System.Generics.Defaults, Winapi.Windows,
-  Core.SystemUtils;
+  Core.SystemUtils, Core.Hash, Core.Logger;
 
 function Pretty(const S: string): string;
 var
@@ -114,6 +114,33 @@ begin
   Result := TJSONObject(V);
 end;
 
+procedure SaveStringList(O: TJSONObject; const AName: string; AList: TStrings);
+var
+  A: TJSONArray;
+  S: string;
+begin
+  A := TJSONArray.Create;
+  O.AddPair(AName, A);
+  for S in AList do
+    A.Add(S);
+end;
+
+procedure LoadStringList(O: TJSONObject; const AName: string; AList: TStrings);
+var
+  A: TJSONArray;
+  I: Integer;
+begin
+  if O.Values[AName] = nil then
+    Exit;
+  A := Arr(O, AName);
+  for I := 0 to A.Count - 1 do
+  begin
+    if not (A.Items[I] is TJSONString) then
+      raise EDelphiBackupError.Create('Exclusão inválida: ' + AName);
+    AList.Add(A.Items[I].Value);
+  end;
+end;
+
 procedure SaveManifest(AManifest: TManifest; const AFileName: string);
 var
   O, X, Y: TJSONObject;
@@ -122,7 +149,10 @@ var
   M: TManifestItem;
   F: TManifestFile;
   S: string;
+  L: ILogger;
 begin
+  L := CreateLogger;
+  L.Debug('Gravando manifesto: ' + AFileName);
   O := TJSONObject.Create;
   try
     O.AddPair('formatVersion', TJSONNumber.Create(AManifest.FormatVersion));
@@ -132,6 +162,11 @@ begin
     O.AddPair('sourceUserProfile', AManifest.SourceUserProfile);
     O.AddPair('sourcePublicDir', AManifest.SourcePublicDir);
     O.AddPair('userPath', AManifest.UserPath);
+    if AManifest.HasExclusions then
+    begin
+      SaveStringList(O, 'excludeDirs', AManifest.ExcludeDirs);
+      SaveStringList(O, 'excludeFiles', AManifest.ExcludeFiles);
+    end;
     A := TJSONArray.Create;
     O.AddPair('versions', A);
     for V in AManifest.Versions do
@@ -179,6 +214,7 @@ begin
       end;
     end;
     TFile.WriteAllText(AFileName, Pretty(O.ToString), TEncoding.UTF8);
+    L.Debug('Manifesto gravado.');
   finally
     O.Free;
   end;
@@ -193,7 +229,10 @@ var
   V: TManifestVersion;
   M: TManifestItem;
   F: TManifestFile;
+  L: ILogger;
 begin
+  L := CreateLogger;
+  L.Debug('Lendo manifesto: ' + AFileName);
   Result := nil;
   J := nil;
   try
@@ -212,6 +251,10 @@ begin
     Result.SourceUserProfile := SVal(O, 'sourceUserProfile');
     Result.SourcePublicDir := SVal(O, 'sourcePublicDir');
     Result.UserPath := SVal(O, 'userPath');
+    Result.HasExclusions := (O.Values['excludeDirs'] <> nil) and
+      (O.Values['excludeFiles'] <> nil);
+    LoadStringList(O, 'excludeDirs', Result.ExcludeDirs);
+    LoadStringList(O, 'excludeFiles', Result.ExcludeFiles);
     A := Arr(O, 'versions');
     for I := 0 to A.Count - 1 do
     begin
@@ -275,10 +318,12 @@ begin
       Result.Free;
       Result := nil;
       J.Free;
+      L.Error('Manifesto inválido: ' + E.Message);
       raise EDelphiBackupError.Create('Manifesto inválido: ' + E.Message);
     end;
   end;
   J.Free;
+  L.Debug('Manifesto carregado.');
 end;
 
 function Matches(const Name: string; Patterns: TStrings): Boolean;
@@ -432,7 +477,7 @@ begin
     for F in AItem.Files do
       Builder.Append(F.RelPath).Append('|').Append(IntToStr(F.Size)).Append('|')
         .Append(F.ModifiedUtc).Append(#10);
-    Result := LowerCase(THashSHA2.GetHashString(Builder.ToString));
+    Result := Sha256Hex(Builder.ToString);
   finally
     Builder.Free;
   end;
@@ -543,12 +588,13 @@ begin
       MV.InstalledUpdates := V.InstalledUpdates;
       MV.RootDir := V.RootDir;
     end;
-    D := nil;
-    F := nil;
+    Result.HasExclusions := True;
+    D := Result.ExcludeDirs;
+    F := Result.ExcludeFiles;
     if AConfig <> nil then
     begin
-      D := AConfig.ExcludeDirs;
-      F := AConfig.ExcludeFiles;
+      D.Assign(AConfig.ExcludeDirs);
+      F.Assign(AConfig.ExcludeFiles);
     end;
     for It in AItems do
     begin
@@ -563,7 +609,7 @@ begin
           if not FileExists(P) then
             raise EDelphiBackupError.Create
               ('Arquivo de registro não encontrado: ' + P);
-          M.Hash := LowerCase(THashSHA2.GetHashString(NormalizeRegFile(P)));
+          M.Hash := Sha256Hex(NormalizeRegFile(P));
         end
         else
         begin

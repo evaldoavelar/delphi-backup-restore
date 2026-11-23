@@ -10,8 +10,7 @@ type
     FLogger: ILogger;
     FRunner: IProcessRunner;
     FFailureCount: Integer;
-    function ZipFileCount(const AZip: string): Integer;
-    procedure RemoveFolderAfterZip(const AFolder, AZip: string);
+    procedure RemoveFolderAfterZip(const AFolder, AZip, ADestination: string);
   public
     constructor Create(const ALogger: ILogger; const ARunner: IProcessRunner);
     function Execute(const AOptions: TBackupOptions;
@@ -33,7 +32,7 @@ function FormatBytes(ABytes: Int64): string;
 
 implementation
 
-uses System.Classes, System.IOUtils, Winapi.Windows, Core.SystemUtils,
+uses System.Classes, System.IOUtils, System.StrUtils, Winapi.Windows, Core.SystemUtils,
   Core.Manifest, Core.PathDiscovery;
 
 function ItemInScope(AItem: TBackupItem; const AOptions: TBackupOptions;
@@ -47,7 +46,7 @@ begin
   if AItem.Versions.Count = 0 then
     Exit(True);
   for V in AVersions do
-    if ((Length(AOptions.Versions) = 0) or ContainsText(AOptions.Versions,
+    if ((Length(AOptions.Versions) = 0) or Core.Types.ContainsText(AOptions.Versions,
       V.BdsVersion)) and AItem.UsedByVersion(V.BdsVersion) then
       Exit(True);
 end;
@@ -84,7 +83,7 @@ begin
         end;
       end;
     ikFile, ikDll:
-      if GetFileAttributesEx(PChar(AItem.SourcePath), GetFileExInfoStandard,
+      if GetFileAttributesEx(PChar(RealFileSystemPath(AItem.SourcePath)), GetFileExInfoStandard,
         @Info) then
         Result := (Int64(Info.nFileSizeHigh) shl 32) or Info.nFileSizeLow;
   end;
@@ -129,50 +128,76 @@ begin
   FLogger.Debug('Criando serviço de backup.');
 end;
 
-function TBackupEngine.ZipFileCount(const AZip: string): Integer;
+procedure TBackupEngine.RemoveFolderAfterZip(const AFolder, AZip,
+  ADestination: string);
 var
-  Output: string;
-  Lines: TStringList;
+  Folder, Name, Prefix, Output, Line, Entry: string;
+  InFolder, InZip, Lines: TStringList;
   I: Integer;
-  Line: string;
+  Matches: Boolean;
 begin
-  { tar -t lists one entry per line; folders end with '/' }
-  Result := -1;
-  if FRunner.Run('tar.exe', '-t -f "' + AZip + '"', '', Output) <> 0 then
+  Folder := NormalizePath(AFolder);
+  Name := ExtractFileName(Folder);
+  if not IsAbsoluteFileSystemPath(Folder) or
+    not SameText(NormalizePath(ExtractFileDir(Folder)), NormalizePath(ADestination)) or
+    not StartsText(BACKUP_FOLDER_PREFIX, Name) or PathHasReparsePoint(Folder) then
+  begin
+    FLogger.Warn('Pasta de backup mantida por segurança: ' + AFolder);
     Exit;
+  end;
+  FLogger.Info('Conferindo nomes dos arquivos do ZIP: ' + AZip);
+  InFolder := TStringList.Create;
+  InZip := TStringList.Create;
   Lines := TStringList.Create;
   try
-    Lines.Text := Output;
-    Result := 0;
-    for I := 0 to Lines.Count - 1 do
+    InFolder.CaseSensitive := False;
+    InFolder.Duplicates := dupIgnore;
+    InFolder.Sorted := True;
+    InZip.CaseSensitive := False;
+    InZip.Duplicates := dupIgnore;
+    InZip.Sorted := True;
+    Matches := ListFilesInTree(Folder, InFolder) and
+      (FRunner.Run('tar.exe', '-t -f "' + AZip + '"', '', Output) = 0);
+    if Matches then
     begin
-      Line := Trim(Lines[I]);
-      if (Line <> '') and (Line[Length(Line)] <> '/') then
-        Inc(Result);
+      Prefix := Name + '\';
+      Lines.Text := Output;
+      for Line in Lines do
+      begin
+        if Line = '' then
+          Continue;
+        Entry := StringReplace(Line, '/', '\', [rfReplaceAll]);
+        if not StartsText(Prefix, Entry) then
+        begin
+          Matches := False;
+          Break;
+        end;
+        if not EndsText('\', Entry) then
+          InZip.Add(Copy(Entry, Length(Prefix) + 1, MaxInt));
+      end;
+      Matches := Matches and (InZip.Count = InFolder.Count);
+      if Matches then
+        for I := 0 to InFolder.Count - 1 do
+          if not SameText(InFolder[I], InZip[I]) then
+          begin
+            Matches := False;
+            Break;
+          end;
     end;
   finally
     Lines.Free;
+    InZip.Free;
+    InFolder.Free;
   end;
-end;
-
-procedure TBackupEngine.RemoveFolderAfterZip(const AFolder, AZip: string);
-var
-  InFolder, InZip: Integer;
-begin
-  InFolder := CountFilesInTree(AFolder);
-  InZip := ZipFileCount(AZip);
-  FLogger.Info(Format('Conferindo o zip: %d arquivo(s) na pasta, %d no zip.',
-    [InFolder, InZip]));
-  if (InFolder < 0) or (InZip <> InFolder) then
+  if not Matches then
   begin
-    FLogger.Warn('O zip não confere com a pasta; a pasta foi mantida: '
-      + AFolder);
+    FLogger.Warn('O zip não confere com a pasta; a pasta foi mantida: ' + AFolder);
     Exit;
   end;
-  if DeleteTree(AFolder) then
-    FLogger.Info('Pasta removida (o backup está no zip): ' + AFolder)
+  if DeleteTree(Folder) then
+    FLogger.Info('Pasta removida (o backup está no zip): ' + Folder)
   else
-    FLogger.Warn('Não foi possível remover a pasta do backup: ' + AFolder);
+    FLogger.Warn('Não foi possível remover a pasta do backup: ' + Folder);
 end;
 
 function TBackupEngine.Execute(const AOptions: TBackupOptions;
@@ -187,7 +212,7 @@ var
   M: TManifest;
   OK, Used: Boolean;
   I, Failures, ManifestFailures: Integer;
-  D, F: TStrings;
+  Exclusions: TToolConfig;
   Safety: TPathSafety;
   Estimated, Needed, FreeBytes: Int64;
 begin
@@ -195,10 +220,18 @@ begin
   FLogger.Info('Iniciando backup.');
   SelectedVersions := TDelphiVersionList.Create(False);
   Done := TBackupItemList.Create(False);
+  Exclusions := TToolConfig.Create;
   try
+    Exclusions.ExcludeDirs.Clear;
+    Exclusions.ExcludeFiles.Clear;
+    if AConfig <> nil then
+    begin
+      Exclusions.ExcludeDirs.Assign(AConfig.ExcludeDirs);
+      Exclusions.ExcludeFiles.Assign(AConfig.ExcludeFiles);
+    end;
     try
       for V in AVersions do
-        if (Length(AOptions.Versions) = 0) or ContainsText(AOptions.Versions,
+        if (Length(AOptions.Versions) = 0) or Core.Types.ContainsText(AOptions.Versions,
           V.BdsVersion) then
           SelectedVersions.Add(V);
 
@@ -231,7 +264,7 @@ begin
       Estimated := 0;
       for It in AItems do
         if ItemInScope(It, AOptions, AVersions) then
-          Inc(Estimated, EstimateItemSize(It, AConfig));
+          Inc(Estimated, EstimateItemSize(It, Exclusions));
       Needed := Estimated + Estimated div 20;
       if AOptions.CreateZip then
         Inc(Needed, Estimated);
@@ -250,13 +283,6 @@ begin
         raise EDelphiBackupError.Create('A pasta de backup já existe: ' + Root);
       TDirectory.CreateDirectory(Root);
       FLogger.SetLogFile(TPath.Combine(Root, BACKUP_LOG_FILE));
-      D := nil;
-      F := nil;
-      if AConfig <> nil then
-      begin
-        D := AConfig.ExcludeDirs;
-        F := AConfig.ExcludeFiles;
-      end;
       Failures := 0;
       I := 0;
       for It in AItems do
@@ -280,7 +306,8 @@ begin
                 Dest := TPath.Combine(TPath.Combine(Root,
                   BACKUP_FILES_DIR), It.Id);
                 TDirectory.CreateDirectory(Dest);
-                OK := FRunner.CopyTree(It.SourcePath, Dest, False, D, F);
+                OK := FRunner.CopyTree(It.SourcePath, Dest, False,
+                  Exclusions.ExcludeDirs, Exclusions.ExcludeFiles);
               end;
             ikFile, ikDll:
               begin
@@ -290,7 +317,7 @@ begin
                   S := BACKUP_FILES_DIR;
                 Dest := TPath.Combine(TPath.Combine(Root, S), It.Id);
                 TDirectory.CreateDirectory(Dest);
-                OK := FRunner.CopyFile(It.SourcePath, Dest);
+                OK := FRunner.CopyFile(RealFileSystemPath(It.SourcePath), Dest);
               end;
             ikRegistry:
               begin
@@ -330,7 +357,7 @@ begin
             Result := TPath.Combine(TPath.Combine(Root, BACKUP_FILES_DIR),
               AItem.Id);
           end;
-        end, AConfig, FLogger, ManifestFailures);
+        end, Exclusions, FLogger, ManifestFailures);
       Inc(Failures, ManifestFailures);
       try
         SaveManifest(M, TPath.Combine(Root, BACKUP_MANIFEST_FILE));
@@ -350,7 +377,7 @@ begin
           raise EDelphiBackupError.Create('Falha ao compactar backup.');
         Result := Zip;
         if not AOptions.KeepFolder then
-          RemoveFolderAfterZip(Root, Zip);
+          RemoveFolderAfterZip(Root, Zip, AOptions.Destination);
       end;
       FFailureCount := Failures;
       FLogger.Info(Format('Backup concluído: %s; falhas: %d.',
@@ -363,6 +390,7 @@ begin
       end;
     end;
   finally
+    Exclusions.Free;
     Done.Free;
     SelectedVersions.Free;
   end;

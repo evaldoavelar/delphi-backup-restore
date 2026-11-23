@@ -23,8 +23,14 @@ type
     function ItemSelected(AItem: TBackupItem;
       const AOptions: TRestoreOptions): Boolean;
     function ItemSource(AItem: TBackupItem): string;
-    procedure ApplyItem(AItem: TBackupItem; const ATempRoot: string);
+    function ItemDestination(AItem: TBackupItem): string;
+    procedure ValidateDestinations(const AOptions: TRestoreOptions;
+      const AVersions: TArray<string>; AInstalled: TDelphiVersionList);
+    procedure ClearExtraction;
+    procedure ApplyItem(AItem: TBackupItem; const ATempRoot, ASnapshot: string);
     procedure MergeUserPath;
+  protected
+    procedure CheckHostRequirements; virtual;
   public
     constructor Create(const ALogger: ILogger; const ARunner: IProcessRunner);
     destructor Destroy; override;
@@ -50,12 +56,7 @@ implementation
 
 uses
   Winapi.Windows, System.IOUtils, System.StrUtils, Core.Logger,
-  Core.SystemUtils, Core.Manifest;
-
-function DisableWow64Redirection(var AOldValue: Pointer): BOOL; stdcall;
-  external 'kernel32.dll' name 'Wow64DisableWow64FsRedirection';
-function RevertWow64Redirection(AOldValue: Pointer): BOOL; stdcall;
-  external 'kernel32.dll' name 'Wow64RevertWow64FsRedirection';
+  Core.SystemUtils, Core.Manifest, Core.PathDiscovery, Core.DllScanner;
 
 function SortVersionsOldestFirst(const AVersions: TArray<string>;
   AInstalled: TDelphiVersionList): TArray<string>;
@@ -99,7 +100,8 @@ begin
   L.Debug('Ordem de restauração: ' + VersionsToText(Result));
 end;
 
-function RemapPath(const AText, AOldProfile, ANewProfile: string): string;
+function RemapPath(const AText, AOldProfile, ANewProfile: string;
+  AInRegistryKey: Boolean = False): string;
 var
   OldPath, NewPath: string;
   I, N: Integer;
@@ -117,7 +119,7 @@ begin
     LeftOK := I = 1;
     if not LeftOK then
       LeftOK := CharInSet(AText[I - 1], [#0, #9, #10, #13, ' ', '"', '''', ';',
-        '=', ',', '[', '(']);
+        '=', ',', '[', '(']) or (AInRegistryKey and (AText[I - 1] = '\'));
     RightOK := I + N > Length(AText);
     if not RightOK then
       RightOK := CharInSet(AText[I + N], [#0, #9, #10, #13, '\', '/', '"', '''',
@@ -251,8 +253,8 @@ function RemapRegFileText(const ARegText, AOldProfile,
   ANewProfile: string): string;
 var
   Lines: TStringList;
-  I, J, P, Q, StartValue, Colon, WrapAt, K: Integer;
-  S, Body, Data, Prefix, Eol, Indent, NewLine: string;
+  I, J, P, Q, StartValue, Colon, WrapAt, K, NameStart, NameEnd: Integer;
+  S, Body, Data, Prefix, Eol, Indent, NewLine, NewName: string;
   HadFinalEol, HasBom: Boolean;
   L: ILogger;
 begin
@@ -283,12 +285,26 @@ begin
         S := Lines[I];
         Body := TrimLeft(S);
         if (Body <> '') and (Body[1] = '[') then
-          S := RemapPath(S, AOldProfile, ANewProfile)
+          S := RemapPath(S, AOldProfile, ANewProfile, True)
         else if (Body <> '') and CharInSet(Body[1], ['"', '@']) then
         begin
           P := Length(S) - Length(Body) + 1;
           if S[P] = '"' then
-            P := QuotedEnd(S, P) + 1
+          begin
+            NameStart := P;
+            NameEnd := QuotedEnd(S, NameStart);
+            if NameEnd > NameStart then
+            begin
+              NewName := DecodeRegString(Copy(S, NameStart + 1,
+                NameEnd - NameStart - 1));
+              NewName := RemapPath(NewName, AOldProfile, ANewProfile);
+              NewName := EncodeRegString(NewName);
+              S := Copy(S, 1, NameStart) + NewName + Copy(S, NameEnd, MaxInt);
+              P := NameStart + Length(NewName) + 2;
+            end
+            else
+              P := 0;
+          end
           else
             Inc(P);
           while (P > 0) and (P <= Length(S)) and CharInSet(S[P], [' ', #9]) do
@@ -361,19 +377,6 @@ begin
   end;
 end;
 
-function NewTempDirectory(const APrefix: string): string;
-var
-  G: TGUID;
-begin
-  CreateGUID(G);
-  Result := TPath.Combine(TPath.GetTempPath,
-    APrefix + FormatDateTime('yyyymmdd_hhnnss_zzz', Now) + '_' +
-    GUIDToString(G));
-  if not ForceDirectories(Result) then
-    raise EDelphiBackupError.Create
-      ('Não foi possível criar a pasta temporária: ' + Result);
-end;
-
 constructor TRestoreEngine.Create(const ALogger: ILogger;
   const ARunner: IProcessRunner);
 begin
@@ -395,8 +398,19 @@ begin
   if FLogger <> nil then
     FLogger.Debug('Liberando mecanismo de restauração.');
   FManifest.Free;
-  { Extraction is retained for diagnostics; never recursively delete an untrusted path. }
+  ClearExtraction;
   inherited;
+end;
+
+procedure TRestoreEngine.ClearExtraction;
+begin
+  if FExtractedRoot <> '' then
+  begin
+    if not DeleteTree(FExtractedRoot) then
+      FLogger.Warn('Não foi possível remover a pasta temporária: ' +
+        FExtractedRoot);
+    FExtractedRoot := '';
+  end;
 end;
 
 procedure TRestoreEngine.Open(const ASource: string);
@@ -406,15 +420,15 @@ var
   M: TManifest;
 begin
   FLogger.Info('Abrindo backup: ' + ASource);
+  Extracted := '';
   try
     Root := ExpandFileName(ASource);
-    Extracted := '';
     if not DirectoryExists(Root) then
     begin
       if not FileExists(Root) or not SameText(ExtractFileExt(Root), '.zip') then
         raise EDelphiBackupError.Create('Fonte do backup não encontrada: '
           + ASource);
-      Extracted := NewTempDirectory('DelphiBackupRestore_');
+      Extracted := CreateTempDirectory('DelphiBackupRestore_');
       if not FRunner.UnzipTo(Root, Extracted) then
         raise EDelphiBackupError.Create('Falha ao extrair o backup.');
       Root := Extracted;
@@ -423,7 +437,8 @@ begin
         Candidate := '';
         Dirs := TDirectory.GetDirectories(Root);
         for Root in Dirs do
-          if FileExists(TPath.Combine(Root, BACKUP_MANIFEST_FILE)) then
+          if not PathHasReparsePoint(Root) and
+            FileExists(TPath.Combine(Root, BACKUP_MANIFEST_FILE)) then
           begin
             if Candidate <> '' then
               raise EDelphiBackupError.Create
@@ -435,16 +450,24 @@ begin
         Root := Candidate;
       end;
     end;
+    if PathHasReparsePoint(TPath.Combine(Root, BACKUP_MANIFEST_FILE)) then
+      raise EDelphiBackupError.Create
+        ('Caminho inválido para o manifesto: ' + Root);
     M := LoadManifest(TPath.Combine(Root, BACKUP_MANIFEST_FILE));
+    ClearExtraction;
     FManifest.Free;
     FManifest := M;
     FBackupRoot := Root;
     FExtractedRoot := Extracted;
+    Extracted := '';
     FLogger.Info(Format('Backup aberto: %d versões, %d itens.',
       [M.Versions.Count, M.Items.Count]));
   except
     on E: Exception do
     begin
+      if (Extracted <> '') and not DeleteTree(Extracted) then
+        FLogger.Warn('Não foi possível remover a pasta temporária: ' +
+          Extracted);
       FLogger.Error('Falha ao abrir backup: ' + E.Message);
       raise;
     end;
@@ -514,28 +537,266 @@ begin
   end;
 end;
 
+function UsedBySelectedVersion(AItem: TBackupItem;
+  const AVersions: TArray<string>): Boolean;
+var
+  V: string;
+begin
+  Result := False;
+  for V in AVersions do
+    if AItem.UsedByVersion(V) then
+      Exit(True);
+end;
+
+function RegistryKeyInScope(const AKey, ARoot: string): Boolean;
+begin
+  Result := SameText(AKey, ARoot) or StartsText(ARoot + '\', AKey);
+end;
+
+function IsVersionNumber(const S: string): Boolean;
+var
+  P, I: Integer;
+begin
+  Result := False;
+  P := Pos('.', S);
+  if (P <= 1) or (P >= Length(S)) then
+    Exit;
+  for I := 1 to Length(S) do
+    if (I <> P) and not CharInSet(S[I], ['0' .. '9']) then
+      Exit;
+  Result := True;
+end;
+
+function IsDelphiRegistryKey(const AKey: string): Boolean;
+const
+  Roots: array [0 .. 3] of string = ('Embarcadero\BDS\', 'CodeGear\BDS\',
+    'Borland\BDS\', 'Borland\Delphi\');
+var
+  SubKey, Root, Version: string;
+  P: Integer;
+begin
+  Result := False;
+  if not(StartsText('HKCU\Software\', AKey) or StartsText('HKLM\Software\',
+    AKey)) then
+    Exit;
+  SubKey := Copy(AKey, Length('HKCU\Software\') + 1, MaxInt);
+  if StartsText('WOW6432Node\', SubKey) then
+    Delete(SubKey, 1, Length('WOW6432Node\'));
+  for Root in Roots do
+    if StartsText(Root, SubKey) then
+    begin
+      Version := Copy(SubKey, Length(Root) + 1, MaxInt);
+      P := Pos('\', Version);
+      if P > 0 then
+        SetLength(Version, P - 1);
+      Exit(IsVersionNumber(Version));
+    end;
+end;
+
+function IsInstallerKey(const AKey: string): Boolean;
+begin
+  Result := StartsText('HKLM\', AKey) and IsDelphiRegistryKey(AKey);
+end;
+
+function IsAllowedRegistryKey(const AKey: string;
+  ACategory: TItemCategory): Boolean;
+const
+  ExpertKeys: array [0 .. 2] of string = ('GExperts', 'CnPack',
+    'Scooter Software');
+var
+  C: Char;
+  Key, Expert: string;
+  Levels: Integer;
+begin
+  Result := False;
+  if not(StartsText('HKCU\', AKey) or StartsText('HKLM\', AKey)) or
+    (Trim(AKey) <> AKey) or EndsText('\', AKey) or (Pos('\\', AKey) > 0) then
+    Exit;
+  Levels := 0;
+  for C in AKey do
+  begin
+    if CharInSet(C, [#0 .. #31, '"']) then
+      Exit;
+    if C = '\' then
+      Inc(Levels);
+  end;
+  if IsDelphiRegistryKey(AKey) then
+    Exit(True);
+  for Expert in ExpertKeys do
+    if RegistryKeyInScope(AKey, 'HKCU\Software\' + Expert) or
+      RegistryKeyInScope(AKey, 'HKLM\Software\' + Expert) then
+      Exit(True);
+  Key := UpperCase(AKey);
+  if StartsText('HKLM\Software\', Key) then
+  begin
+    { An extra key may not delete a parent of the installer-managed versions. }
+    if StartsText('WOW6432Node\', Copy(Key, Length('HKLM\Software\') + 1,
+      MaxInt)) then
+      Delete(Key, Length('HKLM\Software\') + 1, Length('WOW6432Node\'));
+    if RegistryKeyInScope('HKLM\Software\Embarcadero\BDS', Key) or
+      RegistryKeyInScope('HKLM\Software\CodeGear\BDS', Key) or
+      RegistryKeyInScope('HKLM\Software\Borland\BDS', Key) or
+      RegistryKeyInScope('HKLM\Software\Borland\Delphi', Key) or
+      SameText(Key, 'HKLM\Software\WOW6432Node') then
+      Exit;
+  end;
+  Result := (ACategory = icExtra) and (Levels >= 3) and
+    not SameText('HKCU\Software', AKey) and not SameText('HKLM\Software', AKey)
+    and not RegistryKeyInScope(AKey, 'HKLM\SYSTEM') and
+    (Pos('\MICROSOFT', Key) = 0) and (Pos('\POLICIES', Key) = 0) and
+    (Pos('\CLASSES', Key) = 0);
+end;
+
+function IsIdeConfigFolder(const ADest: string; AItem: TBackupItem;
+  AInstalled: TDelphiVersionList): Boolean;
+var
+  V: TDelphiVersion;
+begin
+  Result := False;
+  for V in AInstalled do
+    if (AItem.Versions.IndexOf(V.BdsVersion) >= 0) and
+      (SameText(ADest, NormalizePath(V.CommonDir)) or SameText(ADest,
+      NormalizePath(V.UserDir)) or SameText(ADest, NormalizePath(V.AppDataDir)))
+    then
+      Exit(True);
+end;
+
+function PathsOverlap(const APath, ARoot: string): Boolean;
+begin
+  Result := (ARoot <> '') and (IsPathInside(APath, ARoot) or
+    IsPathInside(ARoot, APath));
+end;
+
+function IsSystemFileTarget(const ADest: string; AKind: TItemKind): Boolean;
+var
+  Parent, WowDir: string;
+begin
+  Result := False;
+  if not(AKind in [ikFile, ikDll]) then
+    Exit;
+  Parent := ExtractFileDir(ADest);
+  WowDir := GetSysWow64Dir;
+  Result := SameText(Parent, GetSystem32Dir) or
+    ((WowDir <> '') and SameText(Parent, WowDir));
+end;
+
+function TRestoreEngine.ItemDestination(AItem: TBackupItem): string;
+begin
+  Result := RemapPath(AItem.SourcePath, FManifest.SourceUserProfile,
+    GetUserProfileDir, AItem.Kind = ikRegistry);
+  if (AItem.Kind <> ikRegistry) and IsAbsoluteFileSystemPath(Result) then
+    Result := NormalizePath(StringReplace(Result, '/', '\', [rfReplaceAll]));
+end;
+
+procedure TRestoreEngine.ValidateDestinations(const AOptions: TRestoreOptions;
+  const AVersions: TArray<string>; AInstalled: TDelphiVersionList);
+var
+  Safety: TPathSafety;
+  Violations: TStringList;
+  M: TManifestItem;
+  Item: TBackupItem;
+  Dest, FilePath: string;
+
+  procedure Reject(const AReason: string);
+  begin
+    Violations.Add('[' + Item.Id + '] ' + Dest + ': ' + AReason);
+  end;
+
+begin
+  Safety := TPathSafety.Create(AInstalled);
+  Violations := TStringList.Create;
+  try
+    for M in FManifest.Items do
+    begin
+      Item := M.Item;
+      if not ItemSelected(Item, AOptions) or not UsedBySelectedVersion(Item,
+        AVersions) then
+        Continue;
+      Dest := ItemDestination(Item);
+      if Item.Kind = ikRegistry then
+      begin
+        if not IsAllowedRegistryKey(Dest, Item.Category) then
+          Reject('chave de registro fora dos escopos permitidos');
+        Continue;
+      end;
+      if not IsAbsoluteFileSystemPath(Dest) then
+      begin
+        Reject('caminho de destino inválido ou não absoluto');
+        Continue;
+      end;
+      if Safety.IsContainer(Dest) then
+        Reject('destino é uma pasta de sistema');
+      { File items can address individual System32/SysWOW64 files. The
+        Windows directory and its folders may never be copied as a tree. }
+      if Safety.IsForbidden(Dest) and not IsSystemFileTarget(Dest, Item.Kind)
+      then
+        Reject('destino está em uma pasta proibida');
+      if Item.Kind = ikFolder then
+      begin
+        if Item.Category = icIdeConfig then
+        begin
+          if not IsIdeConfigFolder(Dest, Item, AInstalled) then
+            Reject('pasta de configuração não pertence a uma versão do item');
+        end
+        else if Safety.ContainsProtected(Dest) then
+          Reject('destino contém uma pasta protegida da IDE');
+        if FileExists(Dest) then
+          Reject('destino de pasta é um arquivo');
+      end;
+      FilePath := Dest;
+      if Item.Kind in [ikFile, ikDll] then
+      begin
+        FilePath := RealFileSystemPath(Dest);
+        if DirectoryExists(FilePath) or EndsText('\', Item.SourcePath) or
+          EndsText('/', Item.SourcePath) then
+          Reject('destino de arquivo é uma pasta');
+      end;
+      if PathsOverlap(Dest, FBackupRoot) or PathsOverlap(Dest, FExtractedRoot)
+      then
+        Reject('destino se sobrepõe à pasta do backup ou da extração');
+      if PathHasReparsePoint(FilePath) then
+        Reject('destino contém ponto de nova análise ou está inacessível');
+    end;
+    if Violations.Count > 0 then
+      raise EPrecheckError.Create('Destinos de restauração inválidos:' +
+        sLineBreak + TrimRight(Violations.Text));
+  finally
+    Violations.Free;
+    Safety.Free;
+  end;
+end;
+
+procedure TRestoreEngine.CheckHostRequirements;
+var
+  Processes: string;
+begin
+  FLogger.Debug('Verificando privilégios e processos da IDE.');
+  if not IsRunningAsAdmin then
+    raise EPrecheckError.Create('Execute como administrador para restaurar.');
+  if IsDelphiIdeRunning(Processes) then
+    raise EPrecheckError.Create('Feche as IDEs Delphi antes de restaurar: ' +
+      Processes);
+end;
+
 procedure TRestoreEngine.Precheck(const AOptions: TRestoreOptions;
   AInstalled: TDelphiVersionList);
 var
   Versions, Order: TArray<string>;
-  S, Processes, InstallOrder: string;
+  S, InstallOrder: string;
   V: TDelphiVersion;
   M: TManifestVersion;
 begin
   FLogger.Info('Verificando requisitos de restauração (somente leitura).');
   try
     Versions := SelectedVersions(AOptions);
-    if not IsRunningAsAdmin then
-      raise EPrecheckError.Create('Execute como administrador para restaurar.');
-    if IsDelphiIdeRunning(Processes) then
-      raise EPrecheckError.Create('Feche as IDEs Delphi antes de restaurar: ' +
-        Processes);
     if AInstalled = nil then
       raise EPrecheckError.Create
         ('A lista de versões instaladas não foi informada.');
     if Length(Versions) = 0 then
       raise EPrecheckError.Create
         ('O backup não contém versões para restaurar.');
+    ValidateDestinations(AOptions, Versions, AInstalled);
+    CheckHostRequirements;
     Order := ManifestOrder(FManifest, Versions);
     InstallOrder := '';
     for S in Order do
@@ -620,9 +881,13 @@ begin
             begin
               Step := TRestorePlanStep.Create;
               Step.BdsVersion := S;
-              Step.Description := 'Restaurar ' + M.Item.Description + ': ' +
-                RemapPath(M.Item.SourcePath, FManifest.SourceUserProfile,
-                GetUserProfileDir);
+              if (M.Item.Kind = ikRegistry) and
+                IsInstallerKey(ItemDestination(M.Item)) then
+                Step.Description := 'Ignorar chave do instalador: ' +
+                  ItemDestination(M.Item)
+              else
+                Step.Description := 'Restaurar ' + M.Item.Description + ': ' +
+                  ItemDestination(M.Item);
               Result.Add(Step);
               Done.Add(M.Item.Id);
             end;
@@ -664,27 +929,78 @@ begin
       Base := BACKUP_DLLS_DIR;
     Result := TPath.Combine(TPath.Combine(FBackupRoot, Base), AItem.Id);
     if AItem.Kind in [ikFile, ikDll] then
-      Result := TPath.Combine(Result, ExtractFileName(AItem.SourcePath));
+      Result := TPath.Combine(Result,
+        ExtractFileName(StringReplace(AItem.SourcePath, '/', '\',
+        [rfReplaceAll])));
+  end;
+  if not IsAbsoluteFileSystemPath(Result) or
+    not IsPathInside(Result, FBackupRoot) or PathHasReparsePoint(Result) then
+    raise EDelphiBackupError.Create('Caminho de origem inválido no backup: '
+      + Result);
+end;
+
+procedure CheckRegFileScope(const AText, AKey: string);
+var
+  Lines: TStringList;
+  Line, Header, Key: string;
+  HasSection: Boolean;
+begin
+  if Pos(#0, AText) > 0 then
+    raise EDelphiBackupError.Create
+      ('Arquivo de registro contém um caractere nulo.');
+  Lines := TStringList.Create;
+  try
+    Lines.Text := AText;
+    HasSection := False;
+    for Line in Lines do
+    begin
+      Header := Trim(Line);
+      if (Header <> '') and (Header[1] = #$FEFF) then
+        Header := TrimLeft(Copy(Header, 2, MaxInt));
+      if (Header = '') or (Header[1] <> '[') then
+        Continue;
+      if (Length(Header) < 3) or (Header[Length(Header)] <> ']') then
+        raise EDelphiBackupError.Create('Cabeçalho de registro inválido: '
+          + Header);
+      Key := Copy(Header, 2, Length(Header) - 2);
+      if StartsText('-', Key) then
+        Delete(Key, 1, 1);
+      if StartsText('HKEY_CURRENT_USER\', Key) then
+        Key := 'HKCU\' + Copy(Key, Length('HKEY_CURRENT_USER\') + 1, MaxInt)
+      else if StartsText('HKEY_LOCAL_MACHINE\', Key) then
+        Key := 'HKLM\' + Copy(Key, Length('HKEY_LOCAL_MACHINE\') + 1, MaxInt);
+      if not RegistryKeyInScope(Key, AKey) then
+        raise EDelphiBackupError.Create('Seção de registro fora da chave ' +
+          AKey + ': ' + Header);
+      HasSection := True;
+    end;
+    if not HasSection then
+      raise EDelphiBackupError.Create
+        ('Arquivo de registro sem seções para ' + AKey);
+  finally
+    Lines.Free;
   end;
 end;
 
-procedure TRestoreEngine.ApplyItem(AItem: TBackupItem; const ATempRoot: string);
+procedure TRestoreEngine.ApplyItem(AItem: TBackupItem;
+  const ATempRoot, ASnapshot: string);
 var
   Source, Dest, RegText, RegFile, DestVersion, BackupVersion: string;
-  OldRedirection: Pointer;
-  RedirectDisabled: Boolean;
-  IsWow: BOOL;
+  BackupMachine, DestMachine: Word;
+  Hklm32: Boolean;
 begin
+  Dest := ItemDestination(AItem);
   Source := ItemSource(AItem);
-  Dest := RemapPath(AItem.SourcePath, FManifest.SourceUserProfile,
-    GetUserProfileDir);
+  if AItem.Kind in [ikFile, ikDll] then
+    Dest := RealFileSystemPath(Dest);
   FLogger.Info('Restaurando ' + Dest);
   case AItem.Kind of
     ikFolder:
       begin
         if not DirectoryExists(Source) then
           raise EDelphiBackupError.Create('Pasta ausente no backup: ' + Source);
-        if not FRunner.CopyTree(Source, Dest, True, nil, nil) then
+        if not FRunner.CopyTree(Source, Dest, FManifest.HasExclusions,
+          FManifest.ExcludeDirs, FManifest.ExcludeFiles) then
           raise EDelphiBackupError.Create('Falha ao restaurar pasta: ' + Dest);
       end;
     ikFile:
@@ -698,59 +1014,82 @@ begin
       end;
     ikRegistry:
       begin
-        if not FileExists(Source) then
-          raise EDelphiBackupError.Create('Registro ausente no backup: '
-            + Source);
         RegText := TFile.ReadAllText(Source, TEncoding.Unicode);
         RegText := RemapRegFileText(RegText, FManifest.SourceUserProfile,
           GetUserProfileDir);
+        CheckRegFileScope(RegText, Dest);
         RegFile := TPath.Combine(ATempRoot, 'import_' + AItem.Id + '.reg');
         TFile.WriteAllText(RegFile, RegText, TEncoding.Unicode);
-        if not(StartsText('HKCU\', Dest) or StartsText('HKLM\', Dest)) then
-          raise EDelphiBackupError.Create('Raiz de registro inválida: ' + Dest);
+        Hklm32 := StartsText('HKLM\', Dest);
         if not FRunner.RegDelete(Dest) then
           raise EDelphiBackupError.Create('Falha ao limpar registro: ' + Dest);
-        if not FRunner.RegImport(RegFile, StartsText('HKLM\', Dest)) then
-          raise EDelphiBackupError.Create('Falha ao importar registro: ' + Dest
-            + '. Consulte a exportação de segurança em ' + ATempRoot);
+        try
+          if not FRunner.RegImport(RegFile, Hklm32) then
+            raise EDelphiBackupError.Create('reg import retornou falha.');
+        except
+          on E: Exception do
+          begin
+            FLogger.Error('Falha ao importar registro de ' + Dest + ': ' +
+              E.Message);
+            { Import merges values, so remove the partial key before restoring
+              the original snapshot. Attempt the snapshot even if cleanup fails. }
+            try
+              if not FRunner.RegDelete(Dest) then
+                raise EDelphiBackupError.Create('reg delete retornou falha.');
+            except
+              on CleanupError: Exception do
+                FLogger.Error('Falha ao limpar importação parcial de ' + Dest +
+                  ': ' + CleanupError.Message);
+            end;
+            if ASnapshot <> '' then
+              try
+                if not FRunner.RegImport(ASnapshot, Hklm32) then
+                  raise EDelphiBackupError.Create('reg import retornou falha.');
+                FLogger.Info('Snapshot de segurança reimportado: ' + Dest);
+              except
+                on RollbackError: Exception do
+                  FLogger.Error('Falha ao reimportar snapshot de ' + Dest + ': '
+                    + RollbackError.Message);
+              end;
+            raise EDelphiBackupError.Create('Falha ao importar registro: ' +
+              Dest + '. ' + E.Message + ' Exportações de segurança: ' +
+              ATempRoot);
+          end;
+        end;
       end;
     ikDll:
       begin
         if not FileExists(Source) then
           raise EDelphiBackupError.Create('DLL ausente no backup: ' + Source);
-        { A 32-bit process must inspect and write the physical System32, not SysWOW64. }
-        IsWow := False;
-        IsWow64Process(GetCurrentProcess, IsWow);
-        RedirectDisabled := False;
-        OldRedirection := nil;
-        if IsWow then
+        if FileExists(Dest) then
         begin
-          RedirectDisabled := DisableWow64Redirection(OldRedirection);
-          if not RedirectDisabled then
-            RaiseLastOSError;
-        end;
-        try
           DestVersion := GetFileVersionText(Dest);
           BackupVersion := GetFileVersionText(Source);
-          if BackupVersion = '' then
-            BackupVersion := AItem.FileVersion;
-          if FileExists(Dest) and
-            (CompareVersionText(DestVersion, BackupVersion) >= 0) then
+          if (BackupVersion = '') or (DestVersion = '') then
+          begin
+            FLogger.Warn('DLL mantida por versão de arquivo ilegível: ' + Dest);
+            Exit;
+          end;
+          BackupMachine := ReadPeMachine(Source);
+          DestMachine := ReadPeMachine(Dest);
+          if (BackupMachine = 0) or (BackupMachine <> DestMachine) then
+          begin
+            FLogger.Warn
+              ('DLL mantida por arquitetura PE incompatível: ' + Dest);
+            Exit;
+          end;
+          if CompareVersionText(DestVersion, BackupVersion) >= 0 then
           begin
             FLogger.Info
               ('DLL mantida: versão instalada igual ou mais nova em ' + Dest);
             Exit;
           end;
-          if not ForceDirectories(ExtractFileDir(Dest)) then
-            raise EDelphiBackupError.Create
-              ('Não foi possível criar a pasta da DLL: ' + Dest);
-          if not Winapi.Windows.CopyFile(PChar(Source), PChar(Dest), False) then
-            RaiseLastOSError;
-        finally
-          if RedirectDisabled and not RevertWow64Redirection(OldRedirection)
-          then
-            FLogger.Error('Falha ao reativar redirecionamento WOW64.');
         end;
+        if not ForceDirectories(ExtractFileDir(Dest)) then
+          raise EDelphiBackupError.Create
+            ('Não foi possível criar a pasta da DLL: ' + Dest);
+        if not Winapi.Windows.CopyFile(PChar(Source), PChar(Dest), False) then
+          RaiseLastOSError;
       end;
   end;
   FLogger.Debug('Item restaurado: ' + AItem.Id);
@@ -816,11 +1155,11 @@ procedure TRestoreEngine.Execute(const AOptions: TRestoreOptions;
   AInstalled: TDelphiVersionList; const AProgress: TProgressProc);
 var
   Versions: TArray<string>;
-  S, TempRoot, Key, Source: string;
+  S, TempRoot, Key, Source, Snapshot: string;
   V: TDelphiVersion;
   M: TManifestItem;
-  Done, Keys: TStringList;
-  Pass, KindPass, Current, Total: Integer;
+  Done, Keys, Snapshots: TStringList;
+  Pass, KindPass, Current, Total, KeyIndex: Integer;
   Applicable: Boolean;
 begin
   FLogger.Info('Iniciando restauração.');
@@ -829,17 +1168,17 @@ begin
     Versions := SortVersionsOldestFirst(SelectedVersions(AOptions), AInstalled);
     Done := TStringList.Create;
     Keys := TStringList.Create;
+    Snapshots := TStringList.Create;
     try
       { Validate every selected source before creating safety exports or deleting registry keys. }
       Total := 0;
       for M in FManifest.Items do
         if ItemSelected(M.Item, AOptions) then
         begin
-          Applicable := False;
-          for S in Versions do
-            if M.Item.UsedByVersion(S) then
-              Applicable := True;
-          if not Applicable then
+          if not UsedBySelectedVersion(M.Item, Versions) then
+            Continue;
+          if (M.Item.Kind = ikRegistry) and
+            IsInstallerKey(ItemDestination(M.Item)) then
             Continue;
           if Done.IndexOf(M.Item.Id) >= 0 then
             raise EDelphiBackupError.Create('Id de item duplicado: ' +
@@ -853,34 +1192,41 @@ begin
           Inc(Total);
         end;
       Done.Clear;
-      TempRoot := NewTempDirectory('DelphiBackupRestore_pre_');
+      if not FManifest.HasExclusions then
+        FLogger.Warn
+          ('Manifesto sem listas de exclusão completas; as pastas serão copiadas sem espelhamento.');
+      TempRoot := CreateTempDirectory('DelphiBackupRestore_pre_');
       FLogger.Info('Exportações de segurança do registro: ' + TempRoot);
       for S in Versions do
       begin
         V := AInstalled.FindByBds(S);
-        Keys.Add('HKCU\' + V.RegistryKey);
-        Keys.Add('HKLM\' + V.RegistryKey);
+        if V.RegistryKey <> '' then
+        begin
+          Keys.Add('HKCU\' + V.RegistryKey);
+          Keys.Add('HKLM\' + V.RegistryKey);
+        end;
       end;
       for M in FManifest.Items do
-        if ItemSelected(M.Item, AOptions) and (M.Item.Kind = ikRegistry) then
+        if ItemSelected(M.Item, AOptions) and (M.Item.Kind = ikRegistry) and
+          UsedBySelectedVersion(M.Item, Versions) then
         begin
-          Applicable := False;
-          for S in Versions do
-            if M.Item.UsedByVersion(S) then
-              Applicable := True;
-          Key := RemapPath(M.Item.SourcePath, FManifest.SourceUserProfile,
-            GetUserProfileDir);
-          if Applicable and (Keys.IndexOf(Key) < 0) then
+          Key := ItemDestination(M.Item);
+          if not IsInstallerKey(Key) and (Keys.IndexOf(Key) < 0) then
             Keys.Add(Key);
         end;
-      Current := 0;
       for Key in Keys do
       begin
-        Inc(Current);
-        if FRunner.RegKeyExists(Key) and not FRunner.RegExport(Key,
-          TPath.Combine(TempRoot, Format('before_%.3d.reg', [Current]))) then
-          raise EDelphiBackupError.Create
-            ('Falha ao exportar registro atual: ' + Key);
+        Snapshot := '';
+        if FRunner.RegKeyExists(Key) then
+        begin
+          Snapshot := TPath.Combine(TempRoot, Format('before_%.3d.reg',
+            [Snapshots.Count + 1]));
+          if not FRunner.RegExport(Key, Snapshot) or not FileExists(Snapshot)
+          then
+            raise EDelphiBackupError.Create
+              ('Falha ao exportar registro atual: ' + Key);
+        end;
+        Snapshots.Add(Snapshot);
       end;
       Current := 0;
       for Pass := 0 to Length(Versions) + 1 do
@@ -909,9 +1255,21 @@ begin
                   Applicable := True;
             if not Applicable then
               Continue;
+            Snapshot := '';
+            if M.Item.Kind = ikRegistry then
+            begin
+              Key := ItemDestination(M.Item);
+              if IsInstallerKey(Key) then
+              begin
+                FLogger.Info('Chave do instalador ignorada: ' + Key);
+                Continue;
+              end;
+              KeyIndex := Keys.IndexOf(Key);
+              Snapshot := Snapshots[KeyIndex];
+            end;
             if Assigned(AProgress) then
               AProgress(Current, Total, 'Restaurando ' + M.Item.Description);
-            ApplyItem(M.Item, TempRoot);
+            ApplyItem(M.Item, TempRoot, Snapshot);
             Done.Add(M.Item.Id);
             Inc(Current);
             if Assigned(AProgress) then
@@ -923,6 +1281,7 @@ begin
         ('Restauração concluída. Exportações de segurança mantidas em ' +
         TempRoot);
     finally
+      Snapshots.Free;
       Keys.Free;
       Done.Free;
     end;
