@@ -55,6 +55,10 @@ function RemapProfilePath(const AText, AOldProfile,
   ANewProfile: string): string;
 function RemapRegFileText(const ARegText, AOldProfile,
   ANewProfile: string): string;
+{ Removes from a .reg export the IDE session state (Session, Closed Files,
+  Closed Projects, History Lists), which points to files of the source machine.
+  Restoring it makes the IDE try to reopen a missing project at startup. }
+function StripTransientRegText(const ARegText: string): string;
 
 implementation
 
@@ -448,6 +452,60 @@ function RemapRegFileText(const ARegText, AOldProfile,
 begin
   Result := RemapRegText(ARegText, [PathMapping(AOldProfile, ANewProfile)],
     CreateLogger);
+end;
+
+function IsTransientRegSection(const AHeader: string): Boolean;
+const
+  Transient: array [0 .. 3] of string = ('Session', 'Closed Files',
+    'Closed Projects', 'History Lists');
+var
+  Path: string;
+  Parts: TArray<string>;
+  I, J: Integer;
+begin
+  Result := False;
+  Path := Trim(AHeader);
+  if (Length(Path) < 2) or (Path[1] <> '[') or (Path[Length(Path)] <> ']')
+  then
+    Exit;
+  Path := Copy(Path, 2, Length(Path) - 2);
+  Parts := Path.Split(['\']);
+  { <raiz>\...\BDS\<versão>\<filha> ou ...\Delphi\<versão>\<filha>: só a
+    chave filha direta da versão é estado de sessão da IDE. }
+  for I := 1 to Length(Parts) - 3 do
+    if SameText(Parts[I], 'BDS') or SameText(Parts[I], 'Delphi') then
+    begin
+      for J := Low(Transient) to High(Transient) do
+        if SameText(Parts[I + 2], Transient[J]) then
+          Exit(True);
+      Exit;
+    end;
+end;
+
+function StripTransientRegText(const ARegText: string): string;
+var
+  Lines: TStringList;
+  Builder: TStringBuilder;
+  I: Integer;
+  Skip: Boolean;
+begin
+  Lines := TStringList.Create;
+  Builder := TStringBuilder.Create;
+  try
+    Lines.Text := ARegText;
+    Skip := False;
+    for I := 0 to Lines.Count - 1 do
+    begin
+      if (Length(Lines[I]) > 0) and (Lines[I][1] = '[') then
+        Skip := IsTransientRegSection(Lines[I]);
+      if not Skip then
+        Builder.Append(Lines[I]).Append(#13#10);
+    end;
+    Result := Builder.ToString;
+  finally
+    Builder.Free;
+    Lines.Free;
+  end;
 end;
 
 constructor TRestoreEngine.Create(const ALogger: ILogger;
@@ -1329,6 +1387,7 @@ begin
         begin
           RegText := TFile.ReadAllText(Source, TEncoding.Unicode);
           RegText := RemapRegText(RegText, Mappings, FLogger);
+          RegText := StripTransientRegText(RegText);
           CheckRegFileScope(RegText, Key);
           if TempRoot = '' then
             TempRoot := CreateTempDirectory('DelphiBackupRestore_import_');
