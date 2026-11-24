@@ -18,6 +18,12 @@ type
     procedure TestDiffManifestsVersionMissing;
     [Test]
     procedure TestDiffManifestsFilesAddedRemovedChanged;
+    [Test]
+    procedure ToleratesRenamedNonAsciiFile;
+    [Test]
+    procedure ToleratesCollapsedNonAsciiFiles;
+    [Test]
+    procedure KeepsDifferencesForExactNamesAndDifferentAsciiCharacters;
   end;
 
 implementation
@@ -160,6 +166,110 @@ begin
       Assert.IsTrue(FoundRemoved, 'removed.pas should be flagged as removed');
       Assert.IsTrue(FoundChanged, 'changed.pas should be flagged as changed');
       Assert.IsTrue(FoundAdded, 'added.pas should be flagged as added');
+    finally
+      Diff.Free;
+    end;
+  finally
+    Current.Free;
+    Backup.Free;
+  end;
+end;
+
+function AddFolder(AManifest: TManifest): TManifestItem;
+begin
+  Result := TManifestItem.Create;
+  AManifest.Items.Add(Result);
+  Result.Item := TBackupItem.Create;
+  Result.Item.Id := 'f001';
+  Result.Item.Kind := ikFolder;
+  Result.Item.SourcePath := 'C:\ACBr';
+end;
+
+procedure AddFile(AItem: TManifestItem; const APath: string; ASize: Int64);
+var
+  F: TManifestFile;
+begin
+  F := TManifestFile.Create;
+  AItem.Files.Add(F);
+  F.RelPath := APath;
+  F.Size := ASize;
+  F.ModifiedUtc := '2026-01-01T00:00:00Z';
+end;
+
+procedure TTestCoreCompareEngine.ToleratesRenamedNonAsciiFile;
+var
+  Backup, Current: TManifest;
+  Diff: TCompareResult;
+begin
+  Backup := TManifest.Create;
+  Current := TManifest.Create;
+  try
+    AddFile(AddFolder(Backup), 'Manuais\Automação Comercial.sxi', 100);
+    AddFile(AddFolder(Current), 'manuais\Automaç╞o Comercial.sxi', 200);
+    Diff := DiffManifests(Backup, Current, []);
+    try
+      Assert.IsFalse(Diff.HasDifferences);
+      Assert.AreEqual(0, Diff.Entries.Count);
+      Assert.AreEqual(1, Diff.TolerantFileCount);
+    finally
+      Diff.Free;
+    end;
+  finally
+    Current.Free;
+    Backup.Free;
+  end;
+end;
+
+procedure TTestCoreCompareEngine.ToleratesCollapsedNonAsciiFiles;
+var
+  Backup, Current: TManifest;
+  Folder: TManifestItem;
+  Diff: TCompareResult;
+begin
+  Backup := TManifest.Create;
+  Current := TManifest.Create;
+  try
+    Folder := AddFolder(Backup);
+    AddFile(Folder, 'Automação Comercial.sxi', 100);
+    AddFile(Folder, 'Automaç╞o Comercial.sxi', 200);
+    AddFile(AddFolder(Current), 'Automação Comercial.sxi', 200);
+    Diff := DiffManifests(Backup, Current, []);
+    try
+      Assert.IsFalse(Diff.HasDifferences);
+      Assert.AreEqual(0, Diff.Entries.Count);
+      Assert.AreEqual(2, Diff.TolerantFileCount);
+    finally
+      Diff.Free;
+    end;
+  finally
+    Current.Free;
+    Backup.Free;
+  end;
+end;
+
+procedure TTestCoreCompareEngine.
+  KeepsDifferencesForExactNamesAndDifferentAsciiCharacters;
+var
+  Backup, Current: TManifest;
+  Folder: TManifestItem;
+  Diff: TCompareResult;
+begin
+  Backup := TManifest.Create;
+  Current := TManifest.Create;
+  try
+    Folder := AddFolder(Backup);
+    AddFile(Folder, 'Automação Comercial.sxi', 100);
+    AddFile(Folder, 'Ação.sxi', 300);
+    Folder := AddFolder(Current);
+    AddFile(Folder, 'AUTOMAÇÃO COMERCIAL.SXI', 200);
+    AddFile(Folder, 'Aça╞.sxi', 300);
+    Diff := DiffManifests(Backup, Current, []);
+    try
+      Assert.AreEqual(3, Diff.Entries.Count);
+      Assert.AreEqual(0, Diff.TolerantFileCount);
+      Assert.AreEqual(dkChanged, Diff.Entries[0].Kind);
+      Assert.AreEqual(dkRemoved, Diff.Entries[1].Kind);
+      Assert.AreEqual(dkAdded, Diff.Entries[2].Kind);
     finally
       Diff.Free;
     end;

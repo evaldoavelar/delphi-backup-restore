@@ -143,16 +143,6 @@ begin
     Result := FormatFloat('0', ABytes / 1024.0) + ' KB';
 end;
 
-function MaskNonAscii(const S: string): string;
-var
-  I: Integer;
-begin
-  Result := S;
-  for I := 1 to Length(Result) do
-    if Ord(Result[I]) > 127 then
-      Result[I] := '?';
-end;
-
 constructor TBackupEngine.Create(const ALogger: ILogger;
   const ARunner: IProcessRunner);
 begin

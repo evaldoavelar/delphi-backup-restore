@@ -42,7 +42,7 @@ sequenceDiagram
     U->>R: Precheck(opções, versões instaladas)
     R-->>U: EPrecheckError (sem admin, IDE aberta, versão ausente)
     U->>R: Execute
-    R->>P: reg export do registro atual (rede de segurança em %TEMP%)
+    R->>P: reg export do registro atual (DelphiBackups\seguranca em Documentos)
     loop cada versão, da mais antiga para a mais nova
         R->>P: robocopy /MIR das pastas da versão (cada pasta uma vez)
         R->>P: reg delete + reg import (remapeado se o perfil mudou)
@@ -138,6 +138,7 @@ function GetSystem32Dir: string;
 function GetSysWow64Dir: string;         // '' em Windows 32-bit
 function GetFileVersionText(const AFileName: string): string;   // 'a.b.c.d' ou ''
 function GetFileCompany(const AFileName: string): string;       // VersionInfo CompanyName ou ''
+function MaskNonAscii(const S: string): string;                 // troca caracteres não-ASCII por ?
 function CompareVersionText(const A, B: string): Integer;        // -1/0/1, numérico por parte
 function NormalizePath(const APath: string): string;             // ExpandFileName, sem barra final, '' se inválido
 function IsPathInside(const APath, AParent: string): Boolean;    // case-insensitive
@@ -155,6 +156,9 @@ function ProductNameForVersion(AEra: TDelphiEra; const ABdsVersion: string): str
 // 18.0=10.1 Berlin, 19.0=10.2 Tokyo, 20.0=10.3 Rio, 21.0=10.4 Sydney, 22.0=11 Alexandria,
 // 23.0=12 Athens, 37.0=13 Florence. Desconhecida -> 'Delphi (BDS x.y)'.
 function RegistryRootForEra(AEra: TDelphiEra): string;  // 'Software\Embarcadero\BDS' etc.
+function RegistrySoftwareKey(const AKey: string): string;       // remove WOW6432Node
+function DelphiRegistryVersion(const AKey: string): string;     // id da versão ou ''
+function IsInstallerKey(const AKey: string): Boolean;           // versão Delphi em HKLM
 function StudioFolderName(AEra: TDelphiEra): string;    // pasta em Documents/Public: 'Embarcadero\Studio',
                                                         // 'RAD Studio' (CodeGear/BDS5), 'Borland Studio Projects'
 ```
@@ -246,6 +250,7 @@ type
     procedure Open(const ASource: string; const AProgress: TProgressProc = nil);
     property Manifest: TManifest read FManifest;
     property BackupRoot: string read FBackupRoot;
+    property SecurityExportDir: string read FSecurityExportDir;
     { Raise EPrecheckError com mensagem clara: não admin, IDE aberta, versão não instalada (mensagem com
       a ordem correta de instalação, da mais antiga p/ mais nova). Warn para InstalledUpdates diferente. }
     procedure Precheck(const AOptions: TRestoreOptions; AInstalled: TDelphiVersionList);
@@ -270,8 +275,11 @@ Para arquivos e pastas comuns, `Core.Zip` lê os tamanhos descompactados do dire
 com `7z l -slt -ba` e usa o percentual do 7-Zip durante a extração. O tar extrai em uma
 única passagem e relata, a cada dois segundos, a contagem e o tamanho em disco dos arquivos
 concluídos, a velocidade média e o tempo decorrido. O mesmo callback alimenta a UI e a CLI.
-Execute: exporta o registro atual das versões escolhidas para `%TEMP%\DelphiBackupRestore_pre_<stamp>\`;
-para cada versão em ordem crescente: `CopyTree(..., Mirror=True)` dos ikFolder cuja lista Versions contém
+Execute exporta o registro atual para `<Documentos>\DelphiBackups\seguranca\pre_restore_<AAAAMMDD_HHMMSS>`.
+A pasta é mantida e exibida ao fim na CLI e na UI. Restaurações iniciadas no mesmo segundo recebem
+um sufixo numérico para preservar as exportações anteriores. Os arquivos de importação remapeados
+são temporários e removidos ao fim.
+Para cada versão em ordem crescente: `CopyTree(..., Mirror=True)` dos ikFolder cuja lista Versions contém
 a versão (item compartilhado entre versões é copiado **uma única vez**, na primeira versão em que aparece —
 o conteúdo é o mesmo; manter um conjunto de Ids já aplicados), ikFile via CopyFile, ikRegistry da versão
 via RegDelete + RegImport (remapeado se perfil diferente, gravado em arquivo temporário UTF-16 LE BOM).
@@ -294,7 +302,10 @@ type
   end;
 function DiffManifests(ABackup, ACurrent: TManifest; const AVersions: TArray<string>): TCompareResult;
   // versões (ausente/ProductVersion/InstalledUpdates), arquivos +/-/~ por item (casando por SourcePath
-  // remapeado), registro por hash normalizado
+  // remapeado), registro por hash normalizado. O compare e o restore ignoram as mesmas chaves de instalador.
+  // Os caminhos exatos têm prioridade. Variantes não-ASCII aceitas entram no resumo, com contagem própria.
+  // No compare, hashes de registro divergentes são detalhados por valor quando as exportações estão
+  // disponíveis. CLI e UI exibem até 20 valores por chave e o log pode registrar todos em nível Debug.
 ```
 
 ### Core.DllScanner 

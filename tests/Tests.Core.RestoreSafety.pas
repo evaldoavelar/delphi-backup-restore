@@ -12,6 +12,7 @@ type
     TTestRunner = class(TInterfacedObject, IProcessRunner)
     public
       Calls: TStringList;
+      RegistryQueries: TStringList;
       TreeDirs: TStringList;
       TreeFiles: TStringList;
       TreeMirror, FailTrees: Boolean;
@@ -42,7 +43,9 @@ type
     protected
       procedure CheckHostRequirements; override;
       procedure MergeUserPath; override;
+      function UserDocumentsDirectory: string; override;
     public
+      DocumentsPath: string;
       MergeCalls: Integer;
     end;
   protected
@@ -92,6 +95,14 @@ type
     [Test]
     procedure InstallerKeysAreSkipped;
     [Test]
+    procedure CompareSkipsInstallerKeys;
+    [Test]
+    procedure CompareListsRegistryValueChanges;
+    [Test]
+    procedure CompareLimitsRegistryDetails;
+    [Test]
+    procedure RegistrySecurityExportsRemainInDocuments;
+    [Test]
     procedure RestoreUsesRecordedExclusionsAndLegacyCopyOnly;
     [Test]
     procedure RobocopyMirrorPreservesExcludedDestinationEntries;
@@ -116,7 +127,7 @@ implementation
 uses
   System.IOUtils, System.StrUtils, Winapi.Windows,
   Core.BackupEngine, Core.CompareEngine, Core.DllScanner, Core.Logger,
-  Core.Manifest, Core.ProcessRunner, Core.SystemUtils;
+  Core.Hash, Core.Manifest, Core.ProcessRunner, Core.SystemUtils;
 
 const
   TestKey = 'HKCU\Software\DelphiBackupRestoreTests\Product';
@@ -128,6 +139,7 @@ constructor TRestoreTestContext.TTestRunner.Create;
 begin
   inherited;
   Calls := TStringList.Create;
+  RegistryQueries := TStringList.Create;
   TreeDirs := TStringList.Create;
   TreeFiles := TStringList.Create;
 end;
@@ -136,6 +148,7 @@ destructor TRestoreTestContext.TTestRunner.Destroy;
 begin
   TreeFiles.Free;
   TreeDirs.Free;
+  RegistryQueries.Free;
   Calls.Free;
   inherited;
 end;
@@ -214,6 +227,7 @@ end;
 function TRestoreTestContext.TTestRunner.RegKeyExists
   (const AKey: string): Boolean;
 begin
+  RegistryQueries.Add(AKey);
   Result := SameText(AKey, TestKey) and (RegistryValue <> '');
 end;
 
@@ -246,6 +260,11 @@ begin
   Inc(MergeCalls);
 end;
 
+function TRestoreTestContext.TTestRestoreEngine.UserDocumentsDirectory: string;
+begin
+  Result := DocumentsPath;
+end;
+
 procedure TRestoreTestContext.Setup;
 var
   V: TManifestVersion;
@@ -265,6 +284,7 @@ begin
   FFake := TTestRunner.Create;
   FRunner := FFake;
   FEngine := TTestRestoreEngine.Create(FLogger, FRunner);
+  FEngine.DocumentsPath := TPath.Combine(FTemp, 'documents');
   FInstalled := TDelphiVersionList.Create(True);
   FVersion := TDelphiVersion.Create;
   FVersion.Era := deEmbarcadero;
@@ -478,6 +498,157 @@ begin
   for M in FManifest.Items do
     Assert.IsTrue(FMessages.IndexOf('Chave do instalador ignorada: ' +
       M.Item.SourcePath) >= 0, M.Item.SourcePath);
+end;
+
+procedure TTestRestoreSafety.CompareSkipsInstallerKeys;
+var
+  Engine: TCompareEngine;
+  Options: TCompareOptions;
+  Diff: TCompareResult;
+begin
+  AddItem('r001', ikRegistry, icIdeConfig,
+    'hklm\software\Embarcadero\BDS\22.0');
+  AddItem('r002', ikRegistry, icIdeConfig,
+    'HKLM\SOFTWARE\WOW6432Node\Borland\Delphi\7.0');
+  AddItem('r003', ikRegistry, icIdeConfig,
+    'HKCU\Software\Embarcadero\BDS\22.0');
+  OpenBackup;
+  Engine := TCompareEngine.Create(FLogger, FRunner);
+  try
+    Options := Default (TCompareOptions);
+    Options.Source := FBackup;
+    Diff := Engine.Execute(Options, FInstalled, nil);
+    try
+      Assert.AreEqual('HKCU\Software\Embarcadero\BDS\22.0',
+        FFake.RegistryQueries.CommaText);
+      Assert.AreEqual(1, Diff.Entries.Count);
+      Assert.AreEqual('r003', Diff.Entries[0].ItemId);
+      Assert.AreEqual(dkRemoved, Diff.Entries[0].Kind);
+    finally
+      Diff.Free;
+    end;
+  finally
+    Engine.Free;
+  end;
+end;
+
+procedure TTestRestoreSafety.CompareListsRegistryValueChanges;
+var
+  Engine: TCompareEngine;
+  Options: TCompareOptions;
+  Diff: TCompareResult;
+  BackupFile, Detail, Section: string;
+begin
+  Section := '[' + TestFullKey + '\Library\Win32]' + sLineBreak;
+  BackupFile := AddRegistryFixture(Section + '@="padrão anterior"' + sLineBreak
+    + '"Removed"="old"' + sLineBreak + '"Name=\"Escaped\""=hex:01,\' +
+    sLineBreak + '  02' + sLineBreak + '"Same"=hex:aa,\' + sLineBreak + '  bb' +
+    sLineBreak + '[' + TestFullKey + '\MRU]' + sLineBreak + '"Ignored"="old"' +
+    sLineBreak);
+  FManifest.Items[0].Hash := Sha256Hex(NormalizeRegFile(BackupFile));
+  FFake.RegistryValue := RegHeader + '[' + TestFullKey + ']' + sLineBreak +
+    '"NAME"="Value"' + sLineBreak + LowerCase(Section) + '@="novo padrão"' +
+    sLineBreak + '"Added"="new"' + sLineBreak + '"Name=\"Escaped\""=hex:01,03' +
+    sLineBreak + '"Same"=hex:AA,BB' + sLineBreak + '[' + TestFullKey + '\MRU]' +
+    sLineBreak + '"Ignored"="new"' + sLineBreak;
+  OpenBackup;
+  Engine := TCompareEngine.Create(FLogger, FRunner);
+  try
+    Options := Default (TCompareOptions);
+    Options.Source := FBackup;
+    Diff := Engine.Execute(Options, FInstalled, nil);
+    try
+      Assert.AreEqual(1, Diff.Entries.Count);
+      Assert.AreEqual(TestKey, Diff.Entries[0].Path);
+      Assert.AreEqual(dkChanged, Diff.Entries[0].Kind);
+      Detail := FormatCompareEntry(Diff.Entries[0]);
+      Assert.IsTrue(StartsText('~ ' + TestKey + '  (Registro diferente)' +
+        sLineBreak, Detail), Detail);
+      Assert.IsTrue(ContainsText(Detail,
+        'Library\Win32\(Padrão): alterado'), Detail);
+      Assert.IsTrue(ContainsText(Detail,
+        'Library\Win32\Removed: ausente'), Detail);
+      Assert.IsTrue(ContainsText(Detail,
+        'Library\Win32\Added: adicionado'), Detail);
+      Assert.IsTrue(ContainsText(Detail,
+        'Library\Win32\Name="Escaped": alterado'), Detail);
+      Assert.IsFalse(ContainsText(Detail, '\Same:'), Detail);
+      Assert.IsFalse(ContainsText(Detail, 'Ignored'), Detail);
+      Assert.IsFalse(ContainsText(Detail, 'Name: '), Detail);
+    finally
+      Diff.Free;
+    end;
+  finally
+    Engine.Free;
+  end;
+end;
+
+procedure TTestRestoreSafety.CompareLimitsRegistryDetails;
+var
+  Engine: TCompareEngine;
+  Options: TCompareOptions;
+  Diff: TCompareResult;
+  Lines: TStringList;
+  I: Integer;
+begin
+  FManifest.Items.Clear;
+  AddRegistryFixture;
+  FFake.RegistryValue := RegHeader + '[' + TestFullKey + ']' + sLineBreak +
+    '"Name"="Value"' + sLineBreak;
+  for I := 1 to 23 do
+    FFake.RegistryValue := FFake.RegistryValue +
+      Format('"Valor%.2d"=dword:00000001', [I]) + sLineBreak;
+  OpenBackup;
+  Engine := TCompareEngine.Create(FLogger, FRunner);
+  Lines := TStringList.Create;
+  try
+    Options := Default (TCompareOptions);
+    Options.Source := FBackup;
+    Diff := Engine.Execute(Options, FInstalled, nil);
+    try
+      Assert.AreEqual(1, Diff.Entries.Count);
+      Lines.Text := Diff.Entries[0].Detail;
+      Assert.AreEqual(22, Lines.Count);
+      Assert.AreEqual('Valor01: adicionado', Trim(Lines[1]));
+      Assert.AreEqual('Valor20: adicionado', Trim(Lines[20]));
+      Assert.AreEqual('... mais 3', Trim(Lines[21]));
+      Assert.IsTrue(FMessages.IndexOf(TestKey + '\Valor23: adicionado') >= 0);
+    finally
+      Diff.Free;
+    end;
+  finally
+    Lines.Free;
+    Engine.Free;
+  end;
+end;
+
+procedure TTestRestoreSafety.RegistrySecurityExportsRemainInDocuments;
+var
+  Base, FirstExport, Leaf, Original: string;
+begin
+  AddRegistryFixture;
+  Original := RegHeader + '[' + TestFullKey + ']' + sLineBreak +
+    '"Name"="Original"' + sLineBreak;
+  FFake.RegistryValue := Original;
+  OpenBackup;
+  Execute;
+  Base := TPath.Combine(FEngine.DocumentsPath, 'DelphiBackups\seguranca');
+  FirstExport := FEngine.SecurityExportDir;
+  Leaf := ExtractFileName(FirstExport);
+  Assert.AreEqual(Base, ExtractFileDir(FirstExport));
+  Assert.IsTrue(StartsText('pre_restore_', Leaf), Leaf);
+  Assert.AreEqual(27, Length(Leaf), Leaf);
+  Assert.AreEqual('_', string(Leaf[21]));
+  Assert.AreEqual(Original, TFile.ReadAllText(TPath.Combine(FirstExport,
+    'before_001.reg'), TEncoding.Unicode));
+  Assert.AreEqual(1, Length(TDirectory.GetFiles(FirstExport)));
+  Assert.AreEqual(FirstExport, FTemps[0]);
+  FFake.RegistryValue := Original;
+  Execute;
+  Assert.AreNotEqual(FirstExport, FEngine.SecurityExportDir);
+  Assert.IsTrue(TFile.Exists(TPath.Combine(FirstExport, 'before_001.reg')));
+  Assert.IsTrue(TFile.Exists(TPath.Combine(FEngine.SecurityExportDir,
+    'before_001.reg')));
 end;
 
 procedure TTestRestoreSafety.RestoreUsesRecordedExclusionsAndLegacyCopyOnly;

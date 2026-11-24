@@ -16,6 +16,7 @@ function GetSysWow64Dir: string;
 function RealFileSystemPath(const APath: string): string;
 function GetFileVersionText(const AFileName: string): string;
 function GetFileCompany(const AFileName: string): string;
+function MaskNonAscii(const S: string): string;
 function CompareVersionText(const A, B: string): Integer;
 function IsAbsoluteFileSystemPath(const APath: string): Boolean;
 function LongPathPrefix(const APath: string): string;
@@ -279,6 +280,16 @@ begin
   finally
     L.Free;
   end;
+end;
+
+function MaskNonAscii(const S: string): string;
+var
+  I: Integer;
+begin
+  Result := S;
+  for I := 1 to Length(Result) do
+    if Ord(Result[I]) > 127 then
+      Result[I] := '?';
 end;
 
 function CompareVersionText(const A, B: string): Integer;

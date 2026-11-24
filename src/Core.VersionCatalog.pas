@@ -7,6 +7,9 @@ uses Core.Types;
 function ProductNameForVersion(AEra: TDelphiEra;
   const ABdsVersion: string): string;
 function RegistryRootForEra(AEra: TDelphiEra): string;
+function RegistrySoftwareKey(const AKey: string): string;
+function DelphiRegistryVersion(const AKey: string): string;
+function IsInstallerKey(const AKey: string): Boolean;
 { Folder under Documents / Public Documents used by the IDE:
   2005/2006 'Borland Studio Projects', 2007..XE5 'RAD Studio',
   XE6 (BDS 14.0) and later 'Embarcadero\Studio'. Delphi 5..7 have none (''). }
@@ -15,7 +18,7 @@ function StudioFolderName(AEra: TDelphiEra;
 
 implementation
 
-uses System.SysUtils;
+uses System.SysUtils, System.StrUtils;
 
 function ProductNameForVersion(AEra: TDelphiEra;
   const ABdsVersion: string): string;
@@ -126,6 +129,61 @@ begin
     else
       Result := 'Embarcadero\Studio';
   end;
+end;
+
+function IsVersionNumber(const S: string): Boolean;
+var
+  P, I: Integer;
+begin
+  Result := False;
+  P := Pos('.', S);
+  if (P <= 1) or (P >= Length(S)) then
+    Exit;
+  for I := 1 to Length(S) do
+    if (I <> P) and not CharInSet(S[I], ['0' .. '9']) then
+      Exit;
+  Result := True;
+end;
+
+function RegistrySoftwareKey(const AKey: string): string;
+begin
+  Result := AKey;
+  if StartsText('HKCU\Software\', AKey) or StartsText('HKLM\Software\', AKey)
+  then
+    if StartsText('WOW6432Node\', Copy(AKey, Length('HKCU\Software\') + 1,
+      MaxInt)) then
+      Delete(Result, Length('HKCU\Software\') + 1, Length('WOW6432Node\'));
+end;
+
+function DelphiRegistryVersion(const AKey: string): string;
+var
+  Key, Root, Version: string;
+  Era: TDelphiEra;
+  P: Integer;
+begin
+  Result := '';
+  Key := RegistrySoftwareKey(AKey);
+  for Era := Low(TDelphiEra) to High(TDelphiEra) do
+  begin
+    Root := Copy(Key, 1, 5) + RegistryRootForEra(Era) + '\';
+    if not StartsText(Root, Key) then
+      Continue;
+    Version := Copy(Key, Length(Root) + 1, MaxInt);
+    P := Pos('\', Version);
+    if P > 0 then
+      SetLength(Version, P - 1);
+    if IsVersionNumber(Version) then
+    begin
+      if Era = deBorlandDelphi then
+        Version := LegacyDelphiId(Version);
+      Exit(Version);
+    end;
+  end;
+end;
+
+function IsInstallerKey(const AKey: string): Boolean;
+begin
+  Result := StartsText('HKLM\', AKey) and (DelphiRegistryVersion(AKey) <> '');
 end;
 
 end.
