@@ -19,6 +19,7 @@ type
     FManifest: TManifest;
     FBackupRoot: string;
     FExtractedRoot: string;
+    FSecurityExportDir: string;
     function SelectedVersions(const AOptions: TRestoreOptions): TArray<string>;
     function ItemSelected(AItem: TBackupItem;
       const AOptions: TRestoreOptions): Boolean;
@@ -32,12 +33,14 @@ type
   protected
     procedure MergeUserPath; virtual;
     procedure CheckHostRequirements; virtual;
+    function UserDocumentsDirectory: string; virtual;
   public
     constructor Create(const ALogger: ILogger; const ARunner: IProcessRunner);
     destructor Destroy; override;
     procedure Open(const ASource: string; const AProgress: TProgressProc = nil);
     property Manifest: TManifest read FManifest;
     property BackupRoot: string read FBackupRoot;
+    property SecurityExportDir: string read FSecurityExportDir;
     procedure Precheck(const AOptions: TRestoreOptions;
       AInstalled: TDelphiVersionList);
     function BuildPlan(const AOptions: TRestoreOptions)
@@ -631,56 +634,6 @@ begin
   Result := SameText(AKey, ARoot) or StartsText(ARoot + '\', AKey);
 end;
 
-function IsVersionNumber(const S: string): Boolean;
-var
-  P, I: Integer;
-begin
-  Result := False;
-  P := Pos('.', S);
-  if (P <= 1) or (P >= Length(S)) then
-    Exit;
-  for I := 1 to Length(S) do
-    if (I <> P) and not CharInSet(S[I], ['0' .. '9']) then
-      Exit;
-  Result := True;
-end;
-
-function RegistrySoftwareKey(const AKey: string): string;
-begin
-  Result := AKey;
-  if StartsText('HKCU\Software\', AKey) or StartsText('HKLM\Software\', AKey)
-  then
-    if StartsText('WOW6432Node\', Copy(AKey, Length('HKCU\Software\') + 1,
-      MaxInt)) then
-      Delete(Result, Length('HKCU\Software\') + 1, Length('WOW6432Node\'));
-end;
-
-function DelphiRegistryVersion(const AKey: string): string;
-var
-  Key, Root, Version: string;
-  Era: TDelphiEra;
-  P: Integer;
-begin
-  Result := '';
-  Key := RegistrySoftwareKey(AKey);
-  for Era := Low(TDelphiEra) to High(TDelphiEra) do
-  begin
-    Root := Copy(Key, 1, 5) + RegistryRootForEra(Era) + '\';
-    if not StartsText(Root, Key) then
-      Continue;
-    Version := Copy(Key, Length(Root) + 1, MaxInt);
-    P := Pos('\', Version);
-    if P > 0 then
-      SetLength(Version, P - 1);
-    if IsVersionNumber(Version) then
-    begin
-      if Era = deBorlandDelphi then
-        Version := LegacyDelphiId(Version);
-      Exit(Version);
-    end;
-  end;
-end;
-
 function TouchesUnselectedRegistryVersion(const AKey: string;
   const AVersions: TArray<string>): Boolean;
 var
@@ -697,11 +650,6 @@ begin
     if RegistryKeyInScope(Copy(Key, 1, 5) + RegistryRootForEra(Era), Key) then
       Exit(True);
   Result := False;
-end;
-
-function IsInstallerKey(const AKey: string): Boolean;
-begin
-  Result := StartsText('HKLM\', AKey) and (DelphiRegistryVersion(AKey) <> '');
 end;
 
 function IsAllowedRegistryKey(const AKey: string;
@@ -1291,19 +1239,49 @@ begin
   end;
 end;
 
+function TRestoreEngine.UserDocumentsDirectory: string;
+begin
+  Result := GetDocumentsDir;
+end;
+
+function CreateSecurityExportDirectory(const ABase: string): string;
+var
+  Prefix: string;
+  Attempt: Integer;
+  ErrorCode: DWORD;
+begin
+  if not ForceDirectories(ABase) then
+    raise EDelphiBackupError.Create
+      ('Falha ao criar pasta de segurança: ' + ABase);
+  Prefix := TPath.Combine(ABase, 'pre_restore_' +
+    FormatDateTime('yyyymmdd_hhnnss', Now));
+  Result := Prefix;
+  Attempt := 1;
+  while not Winapi.Windows.CreateDirectory(PChar(Result), nil) do
+  begin
+    ErrorCode := GetLastError;
+    if ErrorCode <> ERROR_ALREADY_EXISTS then
+      RaiseLastOSError(ErrorCode);
+    Inc(Attempt);
+    Result := Prefix + '_' + IntToStr(Attempt);
+  end;
+end;
+
 procedure TRestoreEngine.Execute(const AOptions: TRestoreOptions;
   AInstalled: TDelphiVersionList; const AProgress: TProgressProc);
 var
   Versions: TArray<string>;
-  S, TempRoot, Key, Source, Dest, Snapshot, RegText, RegFile, Summary: string;
+  S, TempRoot, Key, Source, Dest, Snapshot, RegText, RegFile, Summary,
+    SecurityBase: string;
   Mappings: TArray<TPathMapping>;
   V: TDelphiVersion;
   M: TManifestItem;
   Done, Keys, Snapshots, Failures: TStringList;
   RegistryKeys: TDictionary<TBackupItem, Integer>;
   Pass, KindPass, Current, Total, KeyIndex: Integer;
-  Applicable, KeepTemp, Succeeded: Boolean;
+  Applicable, Succeeded: Boolean;
 begin
+  FSecurityExportDir := '';
   FLogger.Info('Iniciando restauração.');
   try
     Precheck(AOptions, AInstalled);
@@ -1314,9 +1292,7 @@ begin
     Failures := TStringList.Create;
     RegistryKeys := TDictionary<TBackupItem, Integer>.Create;
     TempRoot := '';
-    KeepTemp := False;
     try
-      TempRoot := CreateTempDirectory('DelphiBackupRestore_pre_');
       Mappings := ManifestPathMappings(FManifest);
       for S in Versions do
       begin
@@ -1354,6 +1330,8 @@ begin
           RegText := TFile.ReadAllText(Source, TEncoding.Unicode);
           RegText := RemapRegText(RegText, Mappings, FLogger);
           CheckRegFileScope(RegText, Key);
+          if TempRoot = '' then
+            TempRoot := CreateTempDirectory('DelphiBackupRestore_import_');
           RegFile := TPath.Combine(TempRoot, 'import_' + M.Item.Id + '.reg');
           TFile.WriteAllText(RegFile, RegText, TEncoding.Unicode);
           KeyIndex := Keys.IndexOf(Key);
@@ -1367,19 +1345,30 @@ begin
       if not FManifest.HasExclusions then
         FLogger.Warn
           ('Manifesto sem listas de exclusão completas; as pastas serão copiadas sem espelhamento.');
-      KeepTemp := True;
-      FLogger.Info('Exportações de segurança do registro: ' + TempRoot);
+      SecurityBase := TPath.Combine(UserDocumentsDirectory,
+        'DelphiBackups\seguranca');
+      if FManifest.HasExclusions then
+        for M in FManifest.Items do
+          if (M.Item.Kind = ikFolder) and ItemSelected(M.Item, AOptions) and
+            UsedBySelectedVersion(M.Item, Versions) and
+            IsPathInside(SecurityBase, ItemDestination(M.Item)) then
+            raise EDelphiBackupError.Create
+              ('Pasta de segurança está dentro de um destino espelhado: ' +
+              SecurityBase);
+      FSecurityExportDir := CreateSecurityExportDirectory(SecurityBase);
+      FLogger.Info('Exportações de segurança do registro: ' +
+        FSecurityExportDir);
       for Key in Keys do
       begin
         Snapshot := '';
         if FRunner.RegKeyExists(Key) then
         begin
-          Snapshot := TPath.Combine(TempRoot, Format('before_%.3d.reg',
-            [Snapshots.Count + 1]));
+          Snapshot := TPath.Combine(FSecurityExportDir,
+            Format('before_%.3d.reg', [Snapshots.Count + 1]));
           if not FRunner.RegExport(Key, Snapshot) or not FileExists(Snapshot)
           then
-            raise EDelphiBackupError.Create
-              ('Falha ao exportar registro atual: ' + Key);
+            raise EDelphiBackupError.Create('Falha ao exportar registro atual: '
+              + Key + sLineBreak + 'Pasta de segurança: ' + FSecurityExportDir);
         end;
         Snapshots.Add(Snapshot);
       end;
@@ -1469,14 +1458,12 @@ begin
       begin
         Summary := Format('Restauração concluída com %d falha(s).',
           [Failures.Count]) + sLineBreak + TrimRight(Failures.Text) + sLineBreak
-          + 'Exportações de segurança mantidas em ' + TempRoot;
+          + 'Exportações de segurança mantidas em ' + FSecurityExportDir;
         raise EDelphiBackupError.Create(Summary);
       end;
-      FLogger.Info
-        ('Restauração concluída. Exportações de segurança mantidas em ' +
-        TempRoot);
+      FLogger.Info('Restauração concluída.');
     finally
-      if not KeepTemp and (TempRoot <> '') and not DeleteTree(TempRoot) then
+      if (TempRoot <> '') and not DeleteTree(TempRoot) then
         FLogger.Warn('Não foi possível remover a pasta temporária: ' +
           TempRoot);
       RegistryKeys.Free;

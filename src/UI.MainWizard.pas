@@ -1503,7 +1503,7 @@ var
   Options: TRestoreOptions;
   Plan: TObjectList<TRestorePlanStep>;
   Step: TRestorePlanStep;
-  Line: string;
+  Line, SecurityExportDir: string;
 begin
   FSubtitle.Caption := 'Revise o plano de restauração.';
   Options.Source := FRestoreSource;
@@ -1557,52 +1557,43 @@ begin
   TWizardWorker.Create(procedure
     begin
       FRestore.Execute(Options, FInstalled, OnProgress);
+      SecurityExportDir := FRestore.SecurityExportDir;
     end, procedure(const AError: string; APrecheck: Boolean)
     begin
       FSubtitle.Caption := '';
       RunDone(AError, APrecheck,
-        'Restauração concluída. Abra a IDE para conferir o ambiente.');
+        'Restauração concluída. Abra a IDE para conferir o ambiente.' +
+        sLineBreak + 'Exportações de segurança mantidas em ' +
+        SecurityExportDir);
     end);
 end;
 
 procedure TMainWizard.StartCompare;
 var
   Options: TCompareOptions;
-  Diffs, Total: Integer;
+  Diffs, Total, TolerantFiles: Integer;
 begin
   FSubtitle.Caption := 'Comparando...';
   Options.Source := FRestoreSource;
   Options.Versions := FSelBds;
   Diffs := 0;
   Total := 0;
+  TolerantFiles := 0;
   SetBusy(True);
   TWizardWorker.Create(procedure
     var
       Engine: TCompareEngine;
       Res: TCompareResult;
       E: TDiffEntry;
-      Mark, Line: string;
     begin
       Engine := TCompareEngine.Create(FLogger, FRunner);
       try
         Res := Engine.Execute(Options, FInstalled, FConfig, QueueProgress);
         try
+          TolerantFiles := Res.TolerantFileCount;
           for E in Res.Entries do
           begin
-            case E.Kind of
-              dkAdded:
-                Mark := '+';
-              dkRemoved:
-                Mark := '-';
-              dkChanged:
-                Mark := '~';
-            else
-              Mark := 'i';
-            end;
-            Line := Mark + ' ' + E.Path;
-            if E.Detail <> '' then
-              Line := Line + '  (' + E.Detail + ')';
-            AppendLog(Line);
+            AppendLog(FormatCompareEntry(E));
             Inc(Total);
             if E.Kind <> dkInfo then
               Inc(Diffs);
@@ -1623,6 +1614,8 @@ begin
           [Diffs, Total])
       else
         Msg := 'Comparação concluída: nenhuma diferença encontrada.';
+      if TolerantFiles > 0 then
+        Msg := Msg + sLineBreak + TolerantFileSummary(TolerantFiles);
       RunDone(AError, APrecheck, Msg);
     end);
 end;

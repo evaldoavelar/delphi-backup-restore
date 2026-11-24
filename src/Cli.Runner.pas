@@ -562,25 +562,11 @@ begin
       begin
         Say(Format('[%d/%d] %s', [ACurrent, ATotal, AStep]));
       end);
-    Say('Restauração concluída.');
+    Say('Exportações de segurança mantidas em ' + Engine.SecurityExportDir);
     Result := EXIT_OK;
   finally
     Engine.Free;
     Installed.Free;
-  end;
-end;
-
-function DiffMark(AKind: TDiffKind): string;
-begin
-  case AKind of
-    dkAdded:
-      Result := '+';
-    dkRemoved:
-      Result := '-';
-    dkChanged:
-      Result := '~';
-  else
-    Result := 'i';
   end;
 end;
 
@@ -592,7 +578,6 @@ var
   Options: TCompareOptions;
   Res: TCompareResult;
   E: TDiffEntry;
-  Line: string;
 begin
   if AOpts.Source = '' then
   begin
@@ -609,12 +594,9 @@ begin
     Res := Engine.Execute(Options, Installed, Config, ShowOpenBackupProgress);
     try
       for E in Res.Entries do
-      begin
-        Line := Format('%s %s', [DiffMark(E.Kind), E.Path]);
-        if E.Detail <> '' then
-          Line := Line + '  (' + E.Detail + ')';
-        Say(Line);
-      end;
+        Say(FormatCompareEntry(E));
+      if Res.TolerantFileCount > 0 then
+        Say(TolerantFileSummary(Res.TolerantFileCount));
       if Res.HasDifferences then
       begin
         Say('Existem diferenças entre o backup e o ambiente atual.');

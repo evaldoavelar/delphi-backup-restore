@@ -262,6 +262,7 @@ type
   TCompareResult = class
   public
     Entries: TObjectList<TDiffEntry>;
+    TolerantFileCount: Integer;
     constructor Create;
     destructor Destroy; override;
     function HasDifferences: Boolean; // any entry with Kind <> dkInfo
