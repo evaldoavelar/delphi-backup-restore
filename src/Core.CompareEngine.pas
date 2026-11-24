@@ -18,11 +18,19 @@ type
 
 function DiffManifests(ABackup, ACurrent: TManifest;
   const AVersions: TArray<string>): TCompareResult;
+function TolerantFileSummary(ACount: Integer): string;
+function FormatCompareEntry(AEntry: TDiffEntry): string;
 
 implementation
 
 uses System.SysUtils, System.IOUtils, System.Classes, System.DateUtils,
-  Core.Manifest, Core.SystemUtils, Core.Logger, Core.Zip;
+  System.Generics.Collections, System.StrUtils, Core.Manifest, Core.SystemUtils,
+  Core.Logger, Core.VersionCatalog, Core.Zip;
+
+type
+  TFileIndex = TDictionary<string, TManifestFile>;
+  TFileGroups = TObjectDictionary<string, TList<TManifestFile>>;
+  TRegistryDetails = TFunc<TManifestItem, string, string>;
 
 function Remap(const P, OldProfile, NewProfile: string): string;
 var
@@ -60,16 +68,6 @@ begin
       Exit(X);
 end;
 
-function FindFile(M: TManifestItem; const P: string): TManifestFile;
-var
-  F: TManifestFile;
-begin
-  Result := nil;
-  for F in M.Files do
-    if SameText(F.RelPath, P) then
-      Exit(F);
-end;
-
 function SameModifiedTime(const A, B: string): Boolean;
 var
   LeftTime, RightTime: TDateTime;
@@ -86,13 +84,155 @@ begin
   Result := MilliSecondsBetween(LeftTime, RightTime) <= 2000;
 end;
 
-function DiffManifests(ABackup, ACurrent: TManifest;
-  const AVersions: TArray<string>): TCompareResult;
+function SameFileMetadata(A, B: TManifestFile): Boolean;
+begin
+  Result := (A.Size = B.Size) and SameModifiedTime(A.ModifiedUtc,
+    B.ModifiedUtc);
+end;
+
+procedure IndexFiles(AItem: TManifestItem; AIndex: TFileIndex;
+  AGroups: TFileGroups);
+var
+  F: TManifestFile;
+  Path, Mask: string;
+  Group: TList<TManifestFile>;
+begin
+  for F in AItem.Files do
+  begin
+    Path := AnsiUpperCase(F.RelPath);
+    AIndex.AddOrSetValue(Path, F);
+    Mask := MaskNonAscii(F.RelPath);
+    if Mask = F.RelPath then
+      Continue;
+    Mask := UpperCase(Mask);
+    if not AGroups.TryGetValue(Mask, Group) then
+    begin
+      Group := TList<TManifestFile>.Create;
+      AGroups.Add(Mask, Group);
+    end;
+    Group.Add(F);
+  end;
+end;
+
+function ReplacedByAlias(ACurrent: TManifestFile; const AMask: string;
+  ABackupGroups: TFileGroups; ACurrentIndex: TFileIndex): Boolean;
+var
+  Group: TList<TManifestFile>;
+  F: TManifestFile;
+begin
+  if ABackupGroups.TryGetValue(AMask, Group) then
+    for F in Group do
+      if not ACurrentIndex.ContainsKey(AnsiUpperCase(F.RelPath)) and
+        SameFileMetadata(F, ACurrent) then
+        Exit(True);
+  Result := False;
+end;
+
+procedure CompareFiles(ABackup, ACurrent: TManifestItem; ADiff: TCompareResult);
+var
+  BackupIndex, CurrentIndex: TFileIndex;
+  BackupGroups, CurrentGroups: TFileGroups;
+  MatchedAliases: TDictionary<string, Integer>;
+  F, G: TManifestFile;
+  Mask: string;
+  Count: Integer;
+begin
+  BackupIndex := TFileIndex.Create;
+  CurrentIndex := TFileIndex.Create;
+  BackupGroups := TFileGroups.Create([doOwnsValues]);
+  CurrentGroups := TFileGroups.Create([doOwnsValues]);
+  MatchedAliases := TDictionary<string, Integer>.Create;
+  try
+    IndexFiles(ABackup, BackupIndex, BackupGroups);
+    IndexFiles(ACurrent, CurrentIndex, CurrentGroups);
+    for F in ABackup.Files do
+    begin
+      Mask := UpperCase(MaskNonAscii(F.RelPath));
+      if CurrentIndex.TryGetValue(AnsiUpperCase(F.RelPath), G) then
+      begin
+        if SameFileMetadata(F, G) then
+          Continue;
+        { tar can overwrite the exact name with the contents of a sibling
+          whose non-ASCII name collapsed to the same path. }
+        if ReplacedByAlias(G, Mask, BackupGroups, CurrentIndex) then
+          Inc(ADiff.TolerantFileCount)
+        else
+          ADiff.Add(dkChanged, ABackup.Item.Id, F.RelPath, 'Arquivo alterado');
+      end
+      else if CurrentGroups.ContainsKey(Mask) then
+      begin
+        Inc(ADiff.TolerantFileCount);
+        if not MatchedAliases.TryGetValue(Mask, Count) then
+          Count := 0;
+        MatchedAliases.AddOrSetValue(Mask, Count + 1);
+      end
+      else
+        ADiff.Add(dkRemoved, ABackup.Item.Id, F.RelPath, 'Arquivo ausente');
+    end;
+    for F in ACurrent.Files do
+    begin
+      if BackupIndex.ContainsKey(AnsiUpperCase(F.RelPath)) then
+        Continue;
+      Mask := UpperCase(MaskNonAscii(F.RelPath));
+      if not BackupGroups.ContainsKey(Mask) then
+        ADiff.Add(dkAdded, ABackup.Item.Id, F.RelPath, 'Arquivo adicionado')
+      else if MatchedAliases.TryGetValue(Mask, Count) and (Count > 0) then
+        MatchedAliases[Mask] := Count - 1
+      else
+        Inc(ADiff.TolerantFileCount);
+    end;
+  finally
+    MatchedAliases.Free;
+    CurrentGroups.Free;
+    BackupGroups.Free;
+    CurrentIndex.Free;
+    BackupIndex.Free;
+  end;
+end;
+
+function TolerantFileSummary(ACount: Integer): string;
+begin
+  if ACount = 1 then
+    Result := '1 arquivo com nome não-ASCII comparado de forma tolerante.'
+  else
+    Result := Format
+      ('%d arquivos com nomes não-ASCII comparados de forma tolerante.',
+      [ACount]);
+end;
+
+function FormatCompareEntry(AEntry: TDiffEntry): string;
+var
+  Mark: Char;
+  FirstBreak: Integer;
+begin
+  case AEntry.Kind of
+    dkAdded:
+      Mark := '+';
+    dkRemoved:
+      Mark := '-';
+    dkChanged:
+      Mark := '~';
+  else
+    Mark := 'i';
+  end;
+  Result := Mark + ' ' + AEntry.Path;
+  if AEntry.Detail = '' then
+    Exit;
+  FirstBreak := Pos(sLineBreak, AEntry.Detail);
+  if FirstBreak = 0 then
+    Result := Result + '  (' + AEntry.Detail + ')'
+  else
+    Result := Result + '  (' + Copy(AEntry.Detail, 1, FirstBreak - 1) + ')' +
+      Copy(AEntry.Detail, FirstBreak, MaxInt);
+end;
+
+function CompareManifests(ABackup, ACurrent: TManifest;
+  const AVersions: TArray<string>; const ARegistryDetails: TRegistryDetails)
+  : TCompareResult;
 var
   V, C: TManifestVersion;
   B, M: TManifestItem;
-  F, G: TManifestFile;
-  P: string;
+  P, Detail: string;
   L: ILogger;
 begin
   L := CreateLogger;
@@ -101,8 +241,8 @@ begin
   try
     for V in ABackup.Versions do
     begin
-      if (Length(AVersions) > 0) and not ContainsText(AVersions, V.BdsVersion)
-      then
+      if (Length(AVersions) > 0) and not Core.Types.ContainsText(AVersions,
+        V.BdsVersion) then
         Continue;
       C := ACurrent.FindVersion(V.BdsVersion);
       if C = nil then
@@ -123,6 +263,8 @@ begin
         Continue;
       P := Remap(B.Item.SourcePath, ABackup.SourceUserProfile,
         ACurrent.SourceUserProfile);
+      if (B.Item.Kind = ikRegistry) and IsInstallerKey(P) then
+        Continue;
       M := FindItem(ACurrent, B, P);
       if M = nil then
       begin
@@ -132,27 +274,169 @@ begin
       if B.Item.Kind = ikRegistry then
       begin
         if B.Hash <> M.Hash then
-          Result.Add(dkChanged, B.Item.Id, P, 'Registro diferente');
+        begin
+          Detail := 'Registro diferente';
+          if Assigned(ARegistryDetails) then
+            Detail := ARegistryDetails(B, P);
+          Result.Add(dkChanged, B.Item.Id, P, Detail);
+        end;
         Continue;
       end;
-      for F in B.Files do
-      begin
-        G := FindFile(M, F.RelPath);
-        if G = nil then
-          Result.Add(dkRemoved, B.Item.Id, F.RelPath, 'Arquivo ausente')
-        else if (F.Size <> G.Size) or not SameModifiedTime(F.ModifiedUtc,
-          G.ModifiedUtc) then
-          Result.Add(dkChanged, B.Item.Id, F.RelPath, 'Arquivo alterado');
-      end;
-      for F in M.Files do
-        if FindFile(B, F.RelPath) = nil then
-          Result.Add(dkAdded, B.Item.Id, F.RelPath, 'Arquivo adicionado');
+      CompareFiles(B, M, Result);
     end;
     L.Debug(Format('Comparação de manifestos concluída: %d diferenças.',
       [Result.Entries.Count]));
   except
     Result.Free;
     raise;
+  end;
+end;
+
+function DiffManifests(ABackup, ACurrent: TManifest;
+  const AVersions: TArray<string>): TCompareResult;
+begin
+  Result := CompareManifests(ABackup, ACurrent, AVersions, nil);
+end;
+
+type
+  TRegistryValue = record
+    Path: string;
+    Data: string;
+  end;
+
+  TRegistryValues = TDictionary<string, TRegistryValue>;
+
+function ShortRegistryPath(const AKey: string): string;
+const
+  CurrentUser = 'HKEY_CURRENT_USER\';
+  LocalMachine = 'HKEY_LOCAL_MACHINE\';
+begin
+  Result := AKey;
+  if StartsText(CurrentUser, AKey) then
+    Result := 'HKCU\' + Copy(AKey, Length(CurrentUser) + 1, MaxInt)
+  else if StartsText(LocalMachine, AKey) then
+    Result := 'HKLM\' + Copy(AKey, Length(LocalMachine) + 1, MaxInt);
+end;
+
+function ReadValueName(const ALine: string; out AName: string): Integer;
+var
+  I: Integer;
+begin
+  Result := 0;
+  AName := '';
+  if StartsStr('@=', ALine) then
+    Exit(2);
+  if (ALine = '') or (ALine[1] <> '"') then
+    Exit;
+  I := 2;
+  while I <= Length(ALine) do
+  begin
+    if ALine[I] = '"' then
+    begin
+      Result := I + 1;
+      if (Result > Length(ALine)) or (ALine[Result] <> '=') then
+        Result := 0;
+      Exit;
+    end;
+    if ALine[I] = '\' then
+      Inc(I);
+    if I <= Length(ALine) then
+      AName := AName + ALine[I];
+    Inc(I);
+  end;
+end;
+
+procedure ReadRegistryValues(const AFile, ARoot: string;
+  AValues: TRegistryValues);
+var
+  Lines: TStringList;
+  Line, Key, Name, Subkey: string;
+  Value: TRegistryValue;
+  I, Separator: Integer;
+begin
+  Lines := TStringList.Create;
+  try
+    Lines.Text := NormalizeRegFile(AFile);
+    I := 0;
+    Key := '';
+    while I < Lines.Count do
+    begin
+      Line := Lines[I];
+      Inc(I);
+      if StartsStr('[', Line) and EndsStr(']', Line) then
+      begin
+        Key := ShortRegistryPath(Copy(Line, 2, Length(Line) - 2));
+        Subkey := Key + '\';
+        if SameText(Key, ARoot) then
+          Subkey := ''
+        else if StartsText(ARoot + '\', Key) then
+          Subkey := Copy(Key, Length(ARoot) + 2, MaxInt) + '\';
+        Continue;
+      end;
+      Separator := ReadValueName(Line, Name);
+      if (Key = '') or (Separator = 0) then
+        Continue;
+      Value.Data := Copy(Line, Separator + 1, MaxInt);
+      while EndsStr('\', Value.Data) and (I < Lines.Count) do
+      begin
+        SetLength(Value.Data, Length(Value.Data) - 1);
+        Value.Data := Value.Data + Lines[I];
+        Inc(I);
+      end;
+      if StartsText('hex', Value.Data) or StartsText('dword:', Value.Data) then
+        Value.Data := LowerCase(Value.Data);
+      if Name = '' then
+        Value.Path := Subkey + '(Padrão)'
+      else
+        Value.Path := Subkey + Name;
+      AValues.AddOrSetValue(AnsiUpperCase(Key) + #0 +
+        AnsiUpperCase(Name), Value);
+    end;
+  finally
+    Lines.Free;
+  end;
+end;
+
+function RegistryDetails(const ABackupFile, ACurrentFile, AKey: string;
+  const ALogger: ILogger): string;
+const
+  MaxDetails = 20;
+var
+  Backup, Current: TRegistryValues;
+  Pair: TPair<string, TRegistryValue>;
+  CurrentValue: TRegistryValue;
+  Differences: TStringList;
+  I: Integer;
+begin
+  Result := 'Registro diferente';
+  Backup := TRegistryValues.Create;
+  Current := TRegistryValues.Create;
+  Differences := TStringList.Create;
+  try
+    ReadRegistryValues(ABackupFile, AKey, Backup);
+    ReadRegistryValues(ACurrentFile, AKey, Current);
+    for Pair in Backup do
+      if not Current.TryGetValue(Pair.Key, CurrentValue) then
+        Differences.Add(Pair.Value.Path + ': ausente')
+      else if Pair.Value.Data <> CurrentValue.Data then
+        Differences.Add(Pair.Value.Path + ': alterado');
+    for Pair in Current do
+      if not Backup.ContainsKey(Pair.Key) then
+        Differences.Add(Pair.Value.Path + ': adicionado');
+    Differences.Sort;
+    for I := 0 to Differences.Count - 1 do
+    begin
+      ALogger.Debug(AKey + '\' + Differences[I]);
+      if I < MaxDetails then
+        Result := Result + sLineBreak + '  ' + Differences[I];
+    end;
+    if Differences.Count > MaxDetails then
+      Result := Result + sLineBreak + Format('  ... mais %d',
+        [Differences.Count - MaxDetails]);
+  finally
+    Differences.Free;
+    Current.Free;
+    Backup.Free;
   end;
 end;
 
@@ -169,14 +453,15 @@ function TCompareEngine.Execute(const AOptions: Core.Types.TCompareOptions;
   AInstalled: TDelphiVersionList; AConfig: TToolConfig;
   const AProgress: TProgressProc): TCompareResult;
 var
-  Root, Temp, P: string;
+  Root, Temp, RegistryTemp, P: string;
   B, C: TManifest;
   Items: TBackupItemList;
   Exclusions: TToolConfig;
   It: TBackupItem;
   M: TManifestItem;
   Dirs: TArray<string>;
-  Index, ManifestFailures: Integer;
+  RegistryExports: TDictionary<string, string>;
+  ManifestFailures: Integer;
 begin
   FLogger.Info('Iniciando comparação.');
   Result := nil;
@@ -184,12 +469,14 @@ begin
   C := nil;
   Items := TBackupItemList.Create(True);
   Temp := '';
+  RegistryTemp := '';
+  RegistryExports := TDictionary<string, string>.Create;
   Exclusions := nil;
   try
     try
       if Assigned(AProgress) then
         AProgress(0, 0, 'Abrindo backup...');
-      Root := AOptions.Source;
+      Root := ExpandFileName(AOptions.Source);
       if SameText(ExtractFileExt(Root), '.zip') then
       begin
         Temp := CreateTempDirectory('DelphiBackupRestore_compare_');
@@ -217,6 +504,11 @@ begin
       begin
         if not Applicable(M.Item, AOptions.Versions) then
           Continue;
+        if (M.Item.Kind = ikRegistry) and IsInstallerKey(M.Item.SourcePath) then
+        begin
+          FLogger.Debug('Chave do instalador ignorada: ' + M.Item.SourcePath);
+          Continue;
+        end;
         It := TBackupItem.Create;
         Items.Add(It);
         It.Id := M.Item.Id;
@@ -240,37 +532,65 @@ begin
         It.DllOrigin := M.Item.DllOrigin;
         It.ReinstalledByIde := M.Item.ReinstalledByIde;
       end;
-      Index := 0;
       for It in Items do
         if It.Kind = ikRegistry then
         begin
-          if Temp = '' then
-            Temp := CreateTempDirectory('DelphiBackupRestore_compare_');
-          Inc(Index);
-          P := TPath.Combine(Temp, Format('registro_%d.reg', [Index]));
-          if FRunner.RegKeyExists(It.SourcePath) and
-            not FRunner.RegExport(It.SourcePath, P) then
+          if RegistryTemp = '' then
+            RegistryTemp := CreateTempDirectory
+              ('DelphiBackupRestore_compare_reg_');
+          P := TPath.Combine(RegistryTemp, Format('registro_%d.reg',
+            [RegistryExports.Count + 1]));
+          if not FRunner.RegExport(It.SourcePath, P) then
             raise EDelphiBackupError.Create('Falha ao exportar registro: ' +
               It.SourcePath);
+          RegistryExports.AddOrSetValue(AnsiUpperCase(It.SourcePath), P);
         end;
       if Exclusions = nil then
         Exclusions := AConfig;
-      Index := 0;
       C := BuildEnvironmentManifest(AInstalled, Items,
         function(AItem: TBackupItem): string
         begin
           if AItem.Kind = ikRegistry then
-          begin
-            Inc(Index);
-            Result := TPath.Combine(Temp, Format('registro_%d.reg', [Index]));
-          end
+            Result := RegistryExports[AnsiUpperCase(AItem.SourcePath)]
           else
             Result := RealFileSystemPath(AItem.SourcePath);
         end, Exclusions, FLogger, ManifestFailures);
       if ManifestFailures > 0 then
         FLogger.Warn(Format('Manifesto atual contém %d itens com falha.',
           [ManifestFailures]));
-      Result := DiffManifests(B, C, AOptions.Versions);
+      Result := CompareManifests(B, C, AOptions.Versions,
+        function(AItem: TManifestItem; AKey: string): string
+        var
+          BackupFile, CurrentFile, Id: string;
+        begin
+          Result := 'Registro diferente';
+          Id := AItem.Item.Id;
+          if (Id = '') or (Id = '.') or (Id = '..') or (Pos('\', Id) > 0) or
+            (Pos('/', Id) > 0) or (Pos(':', Id) > 0) then
+          begin
+            FLogger.Warn('Identificador de registro inválido no backup: ' + Id);
+            Exit;
+          end;
+          BackupFile := TPath.Combine(TPath.Combine(Root, BACKUP_REGISTRY_DIR),
+            Id + '.reg');
+          if not IsPathInside(BackupFile, Root) or
+            PathHasReparsePoint(BackupFile) then
+          begin
+            FLogger.Warn('Caminho de registro inválido no backup: ' +
+              BackupFile);
+            Exit;
+          end;
+          CurrentFile := RegistryExports[AnsiUpperCase(AKey)];
+          try
+            Result := RegistryDetails(BackupFile, CurrentFile, AKey, FLogger);
+          except
+            on E: Exception do
+              FLogger.Warn('Falha ao detalhar registro ' + AKey + ': ' +
+                E.Message);
+          end;
+        end);
+      if Result.TolerantFileCount > 0 then
+        FLogger.Debug(TolerantFileSummary(Result.TolerantFileCount));
       FLogger.Info(Format('Comparação concluída: %d diferenças.',
         [Result.Entries.Count]));
     except
@@ -284,6 +604,10 @@ begin
     C.Free;
     B.Free;
     Items.Free;
+    RegistryExports.Free;
+    if (RegistryTemp <> '') and not DeleteTree(RegistryTemp) then
+      FLogger.Warn('Não foi possível remover a pasta temporária: ' +
+        RegistryTemp);
     if Exclusions <> AConfig then
       Exclusions.Free;
     if (Temp <> '') and not DeleteTree(Temp) then

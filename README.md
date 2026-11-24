@@ -87,7 +87,9 @@ flowchart LR
 A restauração opera no modo **sobrescrever por padrão** (*overwrite by default*). Para analisar divergências antes de aplicar alterações, execute o comando de comparação (`compare`).
 
 > [!WARNING]
-> **O restore espelha as pastas** (`robocopy /MIR`): cada pasta restaurada fica **idêntica** à do backup. Arquivos que existem **apenas** na máquina de destino, dentro dessas pastas, **são apagados**. Antes do restore o registro atual das versões escolhidas é exportado para `%TEMP%\DelphiBackupRestore_pre_<data>`, mas arquivos apagados pelo espelhamento não têm cópia automática. Teste primeiro em uma VM e rode `compare` antes.
+> **O restore espelha as pastas** (`robocopy /MIR`): cada pasta restaurada fica **idêntica** à do backup. Arquivos que existem **apenas** na máquina de destino, dentro dessas pastas, **são apagados**. Antes do restore, o registro atual das versões escolhidas é exportado para `<Documentos>\DelphiBackups\seguranca\pre_restore_<AAAAMMDD_HHMMSS>`, mas arquivos apagados pelo espelhamento não têm cópia automática. Teste primeiro em uma VM e rode `compare` antes.
+
+A pasta das exportações é mantida após a restauração. O caminho fica no log e aparece ao final na CLI e na interface gráfica.
 
 ---
 
@@ -116,7 +118,7 @@ flowchart TD
     subgraph DESTINO["Máquina de destino"]
         T --> P{"Pré-checagem<br/>admin · IDE fechada · versões instaladas"}
         P -- "falhou" --> PX["Recusa sem alterar nada"]
-        P -- "ok" --> BK["Exporta o registro atual para %TEMP%"]
+        P -- "ok" --> BK["Exporta o registro atual para Documentos"]
         BK --> O["Restaura da versão mais antiga<br/>para a mais nova"]
         O --> CMP["compare: 0 diferenças"]
     end
