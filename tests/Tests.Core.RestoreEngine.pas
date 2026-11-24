@@ -22,6 +22,16 @@ type
     procedure TestRemapRegFileTextStringValues;
     [Test]
     procedure TestRemapRegFileTextHex2Utf16RoundTrip;
+    [Test]
+    procedure TestStripTransientRemovesSessionAndRecentLists;
+    [Test]
+    procedure TestStripTransientKeepsOtherKeys;
+    [Test]
+    procedure TestStripTransientOnlyDirectChildOfVersion;
+    [Test]
+    procedure TestStripTransientBorlandBds;
+    [Test]
+    procedure TestStripTransientWithoutTransientIsIdentity;
   end;
 
 implementation
@@ -170,6 +180,90 @@ begin
     'C:\Users\OldUser');
   Assert.AreEqual(RegIn, RegRoundTrip,
     'Remapping back to original must produce exact original');
+end;
+
+procedure TTestCoreRestoreEngine.TestStripTransientRemovesSessionAndRecentLists;
+var
+  RegIn, RegOut: string;
+begin
+  RegIn := 'Windows Registry Editor Version 5.00'#13#10#13#10 +
+    '[HKEY_CURRENT_USER\Software\Embarcadero\BDS\22.0]'#13#10 +
+    '"RootDir"="C:\\x"'#13#10#13#10 +
+    '[HKEY_CURRENT_USER\Software\Embarcadero\BDS\22.0\Session]'#13#10 +
+    '"Project"="C:\\Users\\Origem\\Desktop\\sid\\SID.groupproj"'#13#10 +
+    '"DesktopName"="Startup Layout"'#13#10#13#10 +
+    '[HKEY_CURRENT_USER\Software\Embarcadero\BDS\22.0\Closed Files]'#13#10 +
+    '"File_0"="a"'#13#10#13#10 +
+    '[HKEY_CURRENT_USER\Software\Embarcadero\BDS\22.0\Closed Projects]'#13#10 +
+    '"File_0"="b"'#13#10#13#10 +
+    '[HKEY_CURRENT_USER\Software\Embarcadero\BDS\22.0\History Lists\hlSearchText]'#13#10 +
+    '"Item0"="c"'#13#10#13#10;
+  RegOut := StripTransientRegText(RegIn);
+  Assert.AreEqual(0, Pos('Session', RegOut), 'Session must be removed');
+  Assert.AreEqual(0, Pos('Closed Files', RegOut));
+  Assert.AreEqual(0, Pos('Closed Projects', RegOut));
+  Assert.AreEqual(0, Pos('History Lists', RegOut));
+  Assert.AreEqual(0, Pos('SID.groupproj', RegOut));
+  Assert.IsTrue(Pos('"RootDir"="C:\\x"', RegOut) > 0, 'parent key is kept');
+  Assert.IsTrue(Pos('Windows Registry Editor Version 5.00', RegOut) = 1,
+    'header is kept');
+end;
+
+procedure TTestCoreRestoreEngine.TestStripTransientKeepsOtherKeys;
+var
+  RegIn, RegOut: string;
+begin
+  RegIn := 'Windows Registry Editor Version 5.00'#13#10#13#10 +
+    '[HKEY_CURRENT_USER\Software\Embarcadero\BDS\22.0\Session]'#13#10 +
+    '"Project"="p"'#13#10#13#10 +
+    '[HKEY_CURRENT_USER\Software\Embarcadero\BDS\22.0\Known Packages]'#13#10 +
+    '"C:\\p.bpl"="Pacote"'#13#10#13#10 +
+    '[HKEY_CURRENT_USER\Software\Embarcadero\BDS\22.0\Desktops\Startup Layout]'#13#10 +
+    '"Layout"="1"'#13#10#13#10 +
+    '[HKEY_CURRENT_USER\Software\Embarcadero\BDS\22.0\Library\Win32]'#13#10 +
+    '"Search Path"="C:\\lib"'#13#10;
+  RegOut := StripTransientRegText(RegIn);
+  Assert.IsTrue(Pos('Known Packages', RegOut) > 0);
+  Assert.IsTrue(Pos('Desktops\Startup Layout', RegOut) > 0,
+    'saved desktop layouts must not be dropped');
+  Assert.IsTrue(Pos('"Search Path"="C:\\lib"', RegOut) > 0);
+  Assert.AreEqual(0, Pos('"Project"="p"', RegOut));
+end;
+
+procedure TTestCoreRestoreEngine.TestStripTransientOnlyDirectChildOfVersion;
+var
+  RegIn: string;
+begin
+  { "Session" deeper in the tree (e.g. a third-party expert) is configuration. }
+  RegIn := 'Windows Registry Editor Version 5.00'#13#10#13#10 +
+    '[HKEY_CURRENT_USER\Software\Embarcadero\BDS\22.0\GExperts-1.3\Session]'#13#10 +
+    '"X"="1"'#13#10;
+  Assert.AreEqual(RegIn, StripTransientRegText(RegIn));
+end;
+
+procedure TTestCoreRestoreEngine.TestStripTransientBorlandBds;
+var
+  RegIn, RegOut: string;
+begin
+  RegIn := 'Windows Registry Editor Version 5.00'#13#10#13#10 +
+    '[HKEY_CURRENT_USER\Software\Borland\BDS\5.0\Closed Files]'#13#10 +
+    '"File_0"="a"'#13#10#13#10 +
+    '[HKEY_CURRENT_USER\Software\Borland\BDS\5.0\Known Packages]'#13#10 +
+    '"p"="q"'#13#10;
+  RegOut := StripTransientRegText(RegIn);
+  Assert.AreEqual(0, Pos('Closed Files', RegOut));
+  Assert.IsTrue(Pos('Known Packages', RegOut) > 0);
+end;
+
+procedure TTestCoreRestoreEngine.TestStripTransientWithoutTransientIsIdentity;
+var
+  RegIn: string;
+begin
+  RegIn := 'Windows Registry Editor Version 5.00'#13#10#13#10 +
+    '[HKEY_CURRENT_USER\Software\Embarcadero\BDS\22.0\Paths]'#13#10 +
+    '"DocDir"="C:\\Users\\Origem\\Documents"'#13#10;
+  Assert.AreEqual(RegIn, StripTransientRegText(RegIn));
+  Assert.AreEqual('', StripTransientRegText(''));
 end;
 
 initialization
